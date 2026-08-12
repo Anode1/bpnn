@@ -181,27 +181,59 @@ int main(int argc, char **argv)
     printf("%-11s %10s %12s\n", "ref gap pp", "pairs", "backwards");
     for(i = 0; i < NBIN; i++)
         if(rn[i]) printf("%-11s %10ld %11.1f%%\n", lab[i], rn[i], 100.0*rdis[i]/rn[i]);
-    /* The flip rate answers "is this claim backwards". The question a practitioner asks next is "what
-     * could I have resolved, and how many runs would I need". Both follow from the noise scale: the
-     * standard error of a difference between two architectures each trained n times is sigma*sqrt(2/n),
-     * so a gap delta is resolvable at 95% two-sided confidence when delta > 1.96*sigma*sqrt(2/n), i.e.
-     * n > 2*(1.96*sigma/delta)^2. Inverting at n=1 gives the smallest difference one run per side can
-     * establish at all: 1.96*sqrt(2)*sigma = 2.77*sigma.
+    /* RESOLUTION, and why it is reported as a distribution rather than as one number.
      *
-     * This is Gaussian and uses the MEAN within-architecture sigma. The per-architecture spread is
-     * heavy-tailed on NAS-Bench-101, so for an architecture drawn from the upper tail the requirement is
-     * far worse than the table says, and these figures are therefore optimistic rather than
-     * conservative. They are reported next to the empirical flip rates so the two can be compared. */
-    { double sig = sdsum/sdn;
-      static const double d[6] = { 0.10, 0.20, 0.30, 0.50, 1.00, 2.00 };
-      int q;
-      printf("\nRESOLUTION at this noise level (sigma = %.3f pp, Gaussian, mean sigma):\n", sig);
-      printf("  smallest difference ONE run per architecture can establish: %.2f pp\n", 2.77*sig);
-      printf("  %-12s %s\n", "difference", "runs needed per architecture");
-      for(q = 0; q < 6; q++){
-          double need = 2.0*(1.96*sig/d[q])*(1.96*sig/d[q]);
-          printf("  %8.2f pp %14.0f\n", d[q], need < 1.0 ? 1.0 : need);
-      }
+     * The flip rate above needs no distributional assumption. Converting it into "how many runs do I
+     * need" does, and on this data that conversion is fragile: the per-architecture spread is a
+     * heavy-tailed mixture, so its median is 0.33 pp, its mean 0.92, its RMS excluding the
+     * collapse-prone architectures 0.52, and its RMS including them 4.78. Feeding those into the same
+     * formula gives one-run resolution floors from 1.3 to 19 pp and "runs needed for 0.1 pp" from 169 to
+     * 35,938. A single headline figure is therefore not a property of the benchmark, it is a property of
+     * an analyst's choice of summary, and an earlier version of this probe reported one as if it were the
+     * former.
+     *
+     * So we compute it PER ARCHITECTURE from that architecture's own three runs, and report the
+     * distribution. sigma_a is estimated from 3 runs and is itself noisy, which is stated; the
+     * percentiles are of the estimate, not of the truth. The standard error of a difference between two
+     * architectures each trained n times is sigma*sqrt(2/n), so a gap is resolvable at 95% two-sided
+     * confidence when it exceeds 1.96*sigma*sqrt(2/n); at n=1 that floor is 2.77*sigma. */
+    {
+        static float sda[MAXARCH];
+        int q; long m;
+        for(m = 0; m < narch; m++){
+            double mu = (vacc[m][0]+vacc[m][1]+vacc[m][2])/3.0, ss = 0; int k;
+            for(k = 0; k < NTRIAL; k++) ss += (vacc[m][k]-mu)*(vacc[m][k]-mu);
+            sda[m] = (float)sqrt(ss/2.0);
+        }
+        /* insertion-free percentile: partial selection by counting, adequate at this size */
+        for(q = 0; q < 1; q++){
+            static const double pct[5] = { 0.50, 0.75, 0.90, 0.99, 1.00 };
+            static const char  *pn[5]  = { "median", "p75", "p90", "p99", "worst" };
+            int j;
+            printf("\nRESOLUTION per architecture, from that architecture's own three runs.\n");
+            printf("One number cannot describe this: the spread is a heavy-tailed mixture, so the\n");
+            printf("answer depends on WHICH architecture, which is why the distribution is shown.\n");
+            printf("  %-8s %10s %14s %14s %14s\n", "arch", "sigma pp",
+                   "1 run resolves", "runs for 0.3pp", "runs for 0.1pp");
+            for(j = 0; j < 5; j++){
+                /* rank-select sigma at the requested quantile */
+                long target = (long)(pct[j] * (narch - 1)), below;
+                double lo = 0, hi = 100, mid = 0;
+                int it;
+                for(it = 0; it < 40; it++){
+                    mid = 0.5*(lo+hi); below = 0;
+                    for(m = 0; m < narch; m++) if(sda[m] <= mid) below++;
+                    if(below > target) hi = mid; else lo = mid;
+                }
+                { double sg = mid, n03, n01;
+                  n03 = 2.0*(1.96*sg/0.30)*(1.96*sg/0.30);
+                  n01 = 2.0*(1.96*sg/0.10)*(1.96*sg/0.10);
+                  printf("  %-8s %10.3f %11.2f pp %14.0f %14.0f\n", pn[j], sg, 2.77*sg,
+                         n03 < 1 ? 1 : n03, n01 < 1 ? 1 : n01); }
+            }
+            printf("  sigma_a comes from three runs, so it is itself noisy; these are percentiles of\n");
+            printf("  the estimate rather than of the truth.\n");
+        }
     }
 
     printf("\nRead the PRIMARY 0.10-0.30 rows: architecture-search papers contest differences of that\n");
