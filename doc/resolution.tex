@@ -1,0 +1,281 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\newcommand{\pending}[1]{\textcolor{red}{\textbf{[PENDING: #1]}}}
+
+\title{\textbf{What a Benchmark Can Resolve: Training Noise as a Ceiling on\\
+Architecture Comparison and on Predictor Evaluation}}
+\author{Vasili Gavrilov\thanks{Independent researcher. Code and derived tables:
+\url{https://github.com/Anode1/SMBPANN}.}}
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We measure what a neural architecture benchmark can and cannot resolve, using the repeated training runs
+its authors performed and its distributed tables average away. NAS-Bench-101 trained each of its 423,624
+architectures three times; NAS-Bench-201 trained each of 15,625 architectures three times on each of
+three datasets, at every epoch up to 200. Recovering those runs gives a reference that is statistically
+independent of any single one of them, and four things follow.
+
+First, comparing two architectures from one training run each disagrees with an independent reference
+33 to 42 per cent of the time when the observed difference is 0.1 to 0.2 percentage points, on both
+benchmarks and all three datasets. Second, and worse for practice, at low training budget the comparison
+is a coin flip at every effect size: at 4 epochs on NAS-Bench-101 a one-to-two point difference is called
+backwards 45 per cent of the time, against 4 per cent at 108 epochs, which bears directly on
+multi-fidelity and early-stopping search. Third, a benchmark's reported optimum is not a point: 3,558 of
+NAS-Bench-101's architectures cannot be separated from its winner using its own data, so regret measured
+against that winner inherits the width. Fourth, and most useful to the largest audience, there is a
+ceiling on the rank correlation any performance predictor can achieve, because the label it is scored
+against is itself a noisy average. Among the top 1,000 architectures of NAS-Bench-101 that ceiling is
+$\tau = 0.084$; the same quantity on NAS-Bench-201 is $0.536$.
+
+We then show these constants are largely not properties of the individual benchmarks. Writing $\sigma_W$
+for training noise and $\sigma_B$ for the spread of true quality over a set of architectures, the ceiling
+follows from the single ratio $\sigma_W/\sigma_B$, and the collapse of the ceiling on high-performing
+subsets follows from range restriction shrinking $\sigma_B$ while $\sigma_W$ stays fixed. Across 92 cells
+spanning two benchmarks, three datasets, ten training budgets and four subset sizes, a one-parameter
+prediction matches the measured ceiling to within $0.07$ while $\sigma_W/\sigma_B < 0.6$, degrading to
+about $0.15$ beyond it. The single large failure is diagnosable and instructive: NAS-Bench-101's noise is
+a mixture, since roughly one architecture in a hundred sometimes trains and sometimes collapses to chance
+accuracy, and excluding those moves the prediction error from $+0.41$ to $+0.02$. The practical
+consequence is that the ceiling can be estimated for any benchmark or evaluation set from two variances,
+without the replicates at scale that almost nobody has.
+\end{abstract}
+
+\section{Why this is measurable at all}\label{sec:why}
+
+Training a network is random. Starting weights are drawn, examples are shuffled, and on the usual
+hardware the reductions are not associative, so the same architecture trained twice gives two different
+accuracies. Any single accuracy is therefore the architecture's quality plus a draw of noise. This is not
+controversial and it is not new; what is missing is a number.
+
+The number is hard to obtain because it requires training the same thing repeatedly, which nobody can
+afford at modern scale. Two public benchmarks, however, already paid that cost for a different reason.
+NAS-Bench-101 trained each of 423,624 cell architectures three separate times on CIFAR-10, at each of
+four epoch budgets. NAS-Bench-201 trained each of 15,625 architectures three times on each of CIFAR-10,
+CIFAR-100 and a downscaled ImageNet, recording every epoch to 200. Both are among the very few public
+datasets containing genuine training replicates at scale.
+
+Both distributed tables average those runs into one number per architecture. That is the right table for
+ranking architectures and it destroys the only structure a study of the noise can use, so the first step
+here is recovering the individual runs. We do so and check the recovery: the mean of our three recovered
+runs reproduces the distributed averaged table to within $10^{-4}$ percentage points on all 423,624 rows
+of NAS-Bench-101.
+
+With three runs in hand, every measurement below uses the same device. One run supplies the judgment; the
+remaining runs, averaged, supply the reference. The two use disjoint runs, so the reference is
+statistically independent of the judgment, and no quantity is compared against itself.
+
+\section{Theory: one ratio should govern the ceiling}\label{sec:theory}
+
+Let architecture $i$ have true quality $q_i$, with variance $\sigma_B^2$ over whatever set of
+architectures is under consideration, and let a training run return $x_{ij} = q_i + e_{ij}$ with
+$\mathrm{Var}(e) = \sigma_W^2$. A one-run label $A_i = x_{i1}$ has variance $\sigma_B^2 + \sigma_W^2$; a
+two-run label $B_i = (x_{i2}+x_{i3})/2$ has variance $\sigma_B^2 + \sigma_W^2/2$; and since the noise
+terms are independent, $\mathrm{Cov}(A_i,B_i) = \sigma_B^2$. Hence
+\begin{equation}
+  \rho \;=\; \frac{\sigma_B^2}{\sqrt{(\sigma_B^2+\sigma_W^2)\,(\sigma_B^2+\sigma_W^2/2)}}
+        \;=\; \frac{1}{\sqrt{(1+r^2)(1+r^2/2)}}, \qquad r \equiv \sigma_W/\sigma_B ,
+  \label{eq:rho}
+\end{equation}
+and for jointly normal variables Kendall's $\tau = (2/\pi)\arcsin\rho$. Two consequences are worth stating
+before any data is seen.
+
+The ceiling on rank correlation is a function of the single ratio $r$, not an independent property of a
+benchmark. And the ceiling must fall on high-performing subsets, because selecting the top architectures
+restricts the range of $q$ and so shrinks $\sigma_B$, while $\sigma_W$ is unaffected by which
+architectures we chose to look at. The severity of that collapse is then predicted rather than merely
+observed.
+
+The same two quantities give a resolution: the standard error of a difference between two architectures
+each trained $n$ times is $\sigma_W\sqrt{2/n}$, so a true gap $\Delta$ is resolvable at 95 per cent
+confidence when $\Delta > 1.96\,\sigma_W\sqrt{2/n}$, and at $n=1$ the floor is $2.77\,\sigma_W$.
+
+\section{What we measure}\label{sec:results}
+
+\subsection{A single run disagrees with an independent reference}
+
+Binning by the \emph{observed} single-run difference, which is what a reader of a paper has in front of
+them, over two million random pairs per dataset:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+observed difference & NB101 C10 & NB201 C10 & NB201 C100 & NB201 IN16 \\
+\midrule
+$0.05$--$0.10$ pp & $46.1\%$ & $39.7\%$ & $42.3\%$ & $42.3\%$ \\
+$0.10$--$0.20$     & $41.6$   & $33.0$   & $38.2$   & $38.4$ \\
+$0.20$--$0.30$     & $36.4$   & $25.3$   & $33.4$   & $34.2$ \\
+$0.50$--$1.00$     & $16.3$   & $4.3$    & $14.5$   & $15.9$ \\
+$1.00$--$2.00$     & $4.4$    & $0.3$    & $3.2$    & $4.2$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The rates track the noise level across datasets, which is the ordering a correct measurement should
+produce. Two cautions. With three runs there is no noiseless reference, so this is a replication
+disagreement rate rather than a decomposition isolating one run's own error. And because the bins are
+defined by the observed difference, each rate is a predictive posterior, ``I measured $0.15$, how much
+should I believe it'', and not a statement that a given fraction of true $0.15$ gaps are called wrongly.
+
+\subsection{At low training budget the comparison carries no information}
+
+NAS-Bench-101's full archive holds three runs at each of 4, 12, 36 and 108 epochs.
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+epochs & median $\sigma_W$ & $0.1$--$0.2$ & $0.2$--$0.3$ & $0.5$--$1.0$ & $1.0$--$2.0$ \\
+\midrule
+4   & $4.147$ & $48.9\%$ & $51.2\%$ & $47.0\%$ & $45.1\%$ \\
+12  & $5.090$ & $49.2$   & $46.7$   & $47.3$   & $43.5$ \\
+36  & $0.804$ & $47.0$   & $44.5$   & $30.8$   & $18.3$ \\
+108 & $0.328$ & $41.6$   & $36.3$   & $16.5$   & $4.4$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At 4 and 12 epochs the comparison is a coin flip at every effect size up to two percentage points: a
+gap that is reliable after full training, $4.4$ per cent backwards, is $45$ per cent backwards at 4
+epochs. This bears directly on multi-fidelity and early-stopping search, which is standard practice and
+which ranks candidates on exactly these cheap evaluations on the assumption that the ranking transfers.
+Note also that the noise is not monotone in budget, 12 epochs being noisier than 4, plausibly because
+4-epoch accuracy is uniformly poor and leaves less room to diverge.
+
+\subsection{The reported optimum is a set, not a point}
+
+Testing each architecture against the benchmark's best using the pair's own noise:
+
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+benchmark / dataset & best 3-run mean & not separable at 95\% \\
+\midrule
+NAS-Bench-101 CIFAR-10        & $95.06$ & $3{,}558$ of $423{,}624$ \\
+NAS-Bench-201 CIFAR-10        & $94.37$ & $34$ of $15{,}625$ \\
+NAS-Bench-201 CIFAR-100       & $73.50$ & $4$ of $15{,}625$ \\
+NAS-Bench-201 ImageNet16-120  & $46.88$ & $15$ of $15{,}625$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Regret measured against a single reported optimum inherits that width. NAS-Bench-201 is far better
+behaved on this axis than NAS-Bench-101, which is worth stating separately rather than averaging over.
+
+\subsection{The ceiling on predictor evaluation}
+
+Zero-cost proxies, surrogates and performance predictors are all scored by rank correlation against a
+benchmark label that is the mean of a few noisy runs, so no predictor can exceed the correlation the
+label achieves with itself. Measured as $\tau$ between a one-run label and an independent two-run label,
+with the subset chosen by the reference alone so that the judgment run plays no part in the selection:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+subset & NB101 C10 & NB201 C10 & NB201 C100 & NB201 IN16 \\
+\midrule
+top 100    & $0.142$ & $0.384$ & $0.596$ & $0.419$ \\
+top 1000   & $0.084$ & $0.536$ & $0.549$ & $0.495$ \\
+top 10000  & $0.186$ & $0.849$ & $0.845$ & $0.889$ \\
+all        & $0.832$ & $0.923$ & $0.924$ & $0.941$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The whole-set values all exceed $0.83$, which is why the problem is easy to miss: over the full space a
+single run ranks architectures well, because most of the space is separated by margins far larger than
+the noise. The top-$k$ rows are the relevant ones, since a predictor's job is to rank good architectures
+rather than to separate good from broken, and there the ceiling on NAS-Bench-101 is $0.08$ to $0.19$. A
+published correlation near or above that, computed on a comparable subset, is not evidence of a good
+predictor.
+
+\section{The constants are mostly consequences of one ratio}\label{sec:law}
+
+Equation~\eqref{eq:rho} predicts each of those ceilings from $\sigma_W/\sigma_B$ measured on the same
+subset. We estimate $\sigma_W$ as the pooled within-architecture value and $\sigma_B$ from the judgment
+run alone, whose variance is $\sigma_B^2+\sigma_W^2$; using the three-run mean here would be wrong,
+because the subset was chosen using the reference and the mean contains it.
+
+Across 92 cells, spanning two benchmarks, three datasets, ten training budgets and four subset sizes,
+with $\tau$ from $0.42$ to $0.94$ and $r$ from $0.03$ to $2.6$:
+
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+$\sigma_W/\sigma_B$ & cells & mean residual & RMS residual \\
+\midrule
+$<0.1$      & 3  & $-0.038$ & $0.042$ \\
+$0.1$--$0.3$ & 16 & $-0.049$ & $0.064$ \\
+$0.3$--$0.6$ & 20 & $-0.035$ & $0.075$ \\
+$0.6$--$1.0$ & 27 & $-0.074$ & $0.132$ \\
+$>1.0$      & 26 & $-0.129$ & $0.160$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So a one-parameter prediction reproduces the ceiling to within about $0.07$ while the noise is below
+sixty per cent of the quality spread, and degrades beyond that with a systematic tendency to
+over-predict.
+
+\textbf{The single large failure is the informative one.} On the full NAS-Bench-101 set the prediction is
+$0.42$ against a measured $0.832$, a residual of $+0.41$. The cause is that its noise is not one
+distribution but a mixture: roughly one architecture in a hundred sometimes trains and sometimes
+collapses to chance accuracy, with $\sigma_W$ up to $48$ percentage points. Those architectures dominate
+the pooled $\sigma_W$ without dominating the rank correlation, because the well-behaved remainder still
+orders consistently. Excluding them moves $r$ from $0.924$ to $0.246$ and the residual from $+0.41$ to
+$+0.02$. The residual is therefore not merely an error term; it is a detector for heterogeneous training
+noise, and its sign says which way the heterogeneity runs.
+
+\textbf{Why this matters more than the constants.} If the ceiling followed from each benchmark's
+idiosyncrasies, it would have to be measured wherever it was wanted, which requires replicates at scale
+that almost nobody has. Because it follows from two variances, it can be estimated from a handful of
+repeated evaluations, or in some settings from a variance decomposition of a single run's own
+sub-samples. That is what makes the quantity portable beyond the benchmarks that happen to contain
+replicates.
+
+\section{What this does and does not imply}\label{sec:scope}
+
+It does not indict results obtained by querying these benchmarks in the standard way, since that protocol
+reads the published three-run mean rather than a single run. Being imprecise here would be the fastest
+route to having the work dismissed.
+
+It bears directly on four things. Methods that train architectures themselves and report the outcome,
+where a single run is the evidence. Predictor and proxy evaluation, where the label is noisy and the
+ceiling is unreported, so an absolute correlation cannot be interpreted. Multi-fidelity and
+early-stopping search, which Section~\ref{sec:results} shows is ranking on a signal that carries no
+ordering information at 4 and 12 epochs. And the benchmarks' own reported optima together with every
+regret curve measured against them.
+
+\section{Limitations}\label{sec:limits}
+
+The phenomenon is a folk fact and we claim only its quantification. \pending{cite Surrogate NAS
+Benchmarks, which models evaluation noise on 500 architectures with 5 seeds and introduces sparse Kendall
+tau that rounds accuracies to 0.1 per cent precisely to ignore what we measure; Bouthillier et al.\ 2021
+for the general benchmark case; Yang et al.\ 2020 §5.3 as the nearest prior art on ground truth against
+itself; Summers and Dinneen 2021. None of these has been read in full and none of the sentences citing
+them may stand until they are.}
+
+The NAS-Bench-201 numbers rest on a converted release that fills never-evaluated architecture--seed cells
+with the mean of the remaining seeds. Imputed cells have artificially low variance, which deflates both
+the noise estimates and the flip rates by an amount we have not quantified and cannot identify from the
+converted file. This is the most attackable fact in the paper. NAS-Bench-101 has no such imputation.
+
+Pairs share architectures, so pair-level rates are not independent observations and the intervals should
+come from an architecture-level bootstrap, which is not yet done. Everything is measured on validation
+accuracy while papers report test accuracy. The flip rates use uniformly drawn pairs, whereas searches
+operate at the top of the distribution, so those rows are owed restricted to it. And a per-architecture
+$\sigma_W$ from three runs has two degrees of freedom, so it is good to roughly $\pm 60$ per cent;
+statements about individual architectures are correspondingly weak, while pooled statements are not.
+
+Finally, the residual of $-0.12$ in NAS-Bench-101's top-1000 and top-10000 cells is unexplained.
+Excluding the collapse-prone architectures does not move it, since good architectures do not collapse.
+Non-normality of quality at the top and the two to three per cent of tied pairs there are the candidates.
+\end{document}

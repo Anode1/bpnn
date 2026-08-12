@@ -131,15 +131,31 @@ int main(int argc, char **argv)
         fprintf(out, "\n");
         written++;
     }
-    if (amax < bestlo[task] || amax > besthi[task]) {
-        fprintf(stderr, "nb201_extract: REFUSING this table. Best accuracy %.2f is outside the "
-                        "plausible band %.0f-%.0f for %s, so the axis or the units are wrong.\n",
-                amax, bestlo[task], besthi[task], tname[task]);
-        goto done;
+    /* The published bands describe the FINAL epoch, so they can only gate that one. At earlier epochs
+     * there is no reference value to check against, and applying the final-epoch band there refuses
+     * every legitimate table. The weaker check that still applies everywhere is that accuracy is a
+     * fraction of a percent scale and that the task's ceiling has not been exceeded, which would still
+     * catch a units error or a wrong axis. */
+    if (epoch == NEPOCH - 1) {
+        if (amax < bestlo[task] || amax > besthi[task]) {
+            fprintf(stderr, "nb201_extract: REFUSING. Final-epoch best %.2f is outside the plausible "
+                            "band %.0f-%.0f for %s, so the axis or the units are wrong.\n",
+                    amax, bestlo[task], besthi[task], tname[task]);
+            goto refuse;
+        }
+    } else if (amin < 0.0 || amax > besthi[task]) {
+        fprintf(stderr, "nb201_extract: REFUSING. Epoch %d accuracy range %.2f to %.2f is impossible "
+                        "for %s (ceiling %.0f).\n", epoch + 1, amin, amax, tname[task], besthi[task]);
+        goto refuse;
     }
     printf("nb201_extract: %ld architectures, accuracy range %.2f to %.2f\n", written, amin, amax);
     printf("nb201_extract: %s epoch %d -> %s\n", tname[task], epoch + 1, outpath);
     rc = 0;
+    goto done;
+refuse:
+    /* a refused table must not be left on disk, or the next program will read it as if it were valid */
+    if (out) { fclose(out); out = NULL; remove(outpath); }
+    fprintf(stderr, "nb201_extract: %s removed.\n", outpath);
 done:
     if (out) fclose(out);
     free(buf);

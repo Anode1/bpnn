@@ -123,6 +123,7 @@ int main(int argc, char **argv)
 {
     const char *path = argc > 1 ? argv[1] : "validation/nb101_triples.txt";
     long pairs = (long)envint("PAIRS", 2000000);
+    const char *tag = getenv("TAG") ? getenv("TAG") : "cell";
     static int idx[MAXARCH];
     int i, perm[NTRIAL] = {0,1,2};
     double pooled = 0;
@@ -143,18 +144,21 @@ int main(int argc, char **argv)
     }
     pooled = sqrt(pooled/narch);
 
-    printf("nb_ceiling -- %d architectures x %d runs, %s\n", narch, NTRIAL, path);
-    printf("pooled within-architecture SD %.4f pp (2 df each, so %ld df in total)\n\n",
-           pooled, 2L*narch);
+    if(!envint("CSV",0))
+        printf("nb_ceiling -- %d architectures x %d runs, %s\n", narch, NTRIAL, path);
+    if(!envint("CSV",0))
+        printf("pooled within-architecture SD %.4f pp (2 df each, so %ld df in total)\n\n",
+               pooled, 2L*narch);
 
     /* ---- 1. the rank-correlation ceiling ---- */
     for(i = NTRIAL-1; i > 0; i--){ int j = (int)rbelow((uint32_t)(i+1)), t = perm[i]; perm[i]=perm[j]; perm[j]=t; }
     for(i = 0; i < narch; i++) refkey[i] = 0.5f*(vacc[i][perm[1]] + vacc[i][perm[2]]);
     qsort(idx, (size_t)narch, sizeof idx[0], cmp_desc);
-    printf("RANK-CORRELATION CEILING: Kendall tau of a 1-run label against an independent 2-run label.\n");
-    printf("No predictor scored against this benchmark's labels can exceed it.\n");
-    printf("  %-12s %10s %12s %10s %8s %10s %9s\n", "subset", "tau", "+-SE", "tied",
-           "sW/sB", "tau_pred", "resid");
+    if(!envint("CSV",0)) printf("RANK-CORRELATION CEILING: Kendall tau of a 1-run label against an independent 2-run label.\n");
+    if(!envint("CSV",0)) printf("No predictor scored against this benchmark's labels can exceed it.\n");
+    if(!envint("CSV",0))
+        printf("  %-12s %10s %12s %10s %8s %10s %9s\n", "subset", "tau", "+-SE", "tied",
+               "sW/sB", "tau_pred", "resid");
     for(i = 0; i < 4; i++){
         int m = topk[i] ? (topk[i] < narch ? topk[i] : narch) : narch;
         double tau, se, tied;
@@ -188,9 +192,13 @@ int main(int argc, char **argv)
           if(rho > 1.0) rho = 1.0;
           tpred = (2.0/3.14159265358979323846) * asin(rho);
           ratio = sqrt(sw / vB);
-          printf("  %-12s %10.4f %12.4f %9.1f%%  %8.3f %10.4f %+9.4f\n", lab, tau, se, 100.0*tied,
-                 ratio, tpred, tau - tpred); }
+          if(envint("CSV",0))
+              printf("CELL %s %d %.4f %.4f %.4f %.4f\n", tag, m, ratio, tau, tpred, tau - tpred);
+          else
+              printf("  %-12s %10.4f %12.4f %9.1f%%  %8.3f %10.4f %+9.4f\n", lab, tau, se, 100.0*tied,
+                     ratio, tpred, tau - tpred); }
     }
+    if(envint("CSV",0)) return 0;
     printf("  A published tau must be read against the row for the subset it was computed on. The top-k\n");
     printf("  rows are the relevant ones for predictors, which are used to rank good architectures.\n");
 
