@@ -1,12 +1,12 @@
 # -- build artifacts (C engine at repo root) --
 *.o
 *.d
-/smbpann
+/bpnn
 /evolve
 /gentask
-/smbpann_ut
-/smbpann_ut_asan
-/smbpann_ut_ubsan
+/bpnn_ut
+/bpnn_ut_asan
+/bpnn_ut_ubsan
 /nasxover
 /nb101
 /nb101_extract

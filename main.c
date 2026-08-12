@@ -21,9 +21,9 @@
 
 #include "common.h"
 #include "data.h"
-#include "genome.h"
 #include "ckpt.h"
 #include "conv2f.h"
+#include "act.h"
 #include "net.h"
 #include "rng.h"
 #include "train.h"
@@ -42,7 +42,6 @@ static void usage(const char *prog)
         "Trains a network and prints a RESULT line with its fitness (lower is\n"
         "better). With no -f it trains the built-in XOR problem.\n"
         "  -t topology  comma-separated layer widths, e.g. 2,4,1\n"
-        "  -g spec      genome: topology|lrate|momentum|activation\n"
         "                 (e.g. 2,4,1|0.5|0.9|tanh); overrides -t/-r/-m\n"
         "  -f file      dataset: each line is `in` inputs then `out` targets\n"
         "  -i in        number of input values per sample   (with -f)\n"
@@ -198,8 +197,6 @@ int main(int argc, char **argv)
     size_t   dims[SMB_MAX_LAYERS];
     size_t   nlayers = 0;
     char     topo[256];
-    Genome   gen;
-    int      have_spec = 0;
     Net     *net = NULL;
     Conv2f   front;
     int      have_front = 0;
@@ -208,7 +205,7 @@ int main(int argc, char **argv)
     double   train_err = 0.0, test_err = 0.0, fitness = 0.0;
     int      rc = 0;
 
-    while ((c = getopt(argc, argv, "g:t:f:i:o:p:e:r:m:s:H:w:W:qvh")) != -1) {
+    while ((c = getopt(argc, argv, "t:f:i:o:p:e:r:m:s:H:w:W:qvh")) != -1) {
         switch (c) {
         case 'g': spec_arg = optarg; break;
         case 't': topo_arg = optarg; break;
@@ -234,22 +231,11 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    /* A full candidate spec (-g) carries the topology AND the co-evolved
-     * hyper-parameters, and overrides -t/-r/-m. Else -t gives the topology, else
-     * the XOR default 2-hidden-1. */
-    if (spec_arg != NULL) {
-        size_t i;
-        if (genome_parse(&gen, spec_arg) != 0) {
-            fprintf(stderr, "smbpann: bad spec '%s'\n", spec_arg);
-            return 2;
-        }
-        have_spec = 1;
-        nlayers = gen.n;
-        for (i = 0; i < nlayers; i++)
-            dims[i] = gen.dim[i];
-        rate       = (double)gen.lrate;
-        momentum   = (double)gen.momentum;
-        activation = gen.activation;
+    /* -t gives the topology, else the XOR default 2-hidden-1. The co-evolved spec form
+     * (-g topology|lrate|momentum|activation) is gone with the search that produced it;
+     * hyper-parameters are set explicitly with -r, -m and -H. */
+    if (0) {
+        /* unreachable: kept so the else-if chain below reads unchanged */
     } else if (topo_arg != NULL) {
         if (parse_topology(topo_arg, dims, SMB_MAX_LAYERS, &nlayers) != 0) {
             fprintf(stderr, "smbpann: bad topology '%s'\n", topo_arg);
@@ -272,17 +258,7 @@ int main(int argc, char **argv)
                     dims[nlayers - 1], noutput);
             return 2;
         }
-        if (have_spec && gen.c2filt > 0) {
-            /* a 2D conv front-end consumes the whole (square) image; the network's
-             * input dims[0] is the F pooled features, not the pixel count */
-            size_t side = 0;
-            while ((side + 1) * (side + 1) <= (size_t)ninput) side++;
-            if (side * side != (size_t)ninput || gen.c2ksize > side) {
-                fprintf(stderr, "smbpann: 2D front-end needs a square image "
-                                "input (got %ld)\n", ninput);
-                return 2;
-            }
-        } else if (dims[0] != (size_t)ninput) {
+        if (dims[0] != (size_t)ninput) {
             fprintf(stderr, "smbpann: topology input %zu must match data %ld\n",
                     dims[0], ninput);
             return 2;
@@ -292,11 +268,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    /* A spec may include conv layers, so build via net_build (which honours the
-     * per-layer kinds); a bare -t/XOR run is all dense. */
-    net = have_spec
-        ? net_build(gen.dim, gen.kind, gen.nfilt, gen.ksize, gen.n)
-        : net_new(dims, nlayers);
+    net = net_new(dims, nlayers);
     if (net == NULL) {
         fprintf(stderr, "smbpann: cannot build network\n");
         return 1;
@@ -305,17 +277,8 @@ int main(int argc, char **argv)
     rng_seed(&rng, (uint32_t)seed);
     net_init(net, &rng);
 
-    /* a 2D conv front-end sits in front of the network (S = sqrt(ninput)) */
-    if (have_spec && gen.c2filt > 0) {
-        size_t side = 0;
-        while ((side + 1) * (side + 1) <= (size_t)ninput) side++;
-        if (conv2f_init(&front, gen.c2filt, gen.c2ksize, side, &rng) != 0) {
-            fprintf(stderr, "smbpann: cannot build 2D conv front-end\n");
-            net_free(net);
-            return 1;
-        }
-        have_front = 1;
-    }
+    /* The 2-D convolutional front-end was only ever reachable through the co-evolved spec
+     * form, which is gone; conv2f remains available to probes that build a net directly. */
 
     /* weight inheritance: warm-start only from an exactly-matching parent
      * checkpoint (a surviving elite resumes its own training); a changed topology

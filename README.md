@@ -1,493 +1,64 @@
-# SMBPANN
-
-**Self-Modifying Backpropagation Feed-Forward Neural Network.** A network that is
-not told its architecture but searches for it: an evolutionary search over
-network *topology*, where each candidate's *weights* are trained by
-backpropagation. In today's terms this is **evolutionary Neural Architecture
-Search**.
-
-It began as a 1997 seminar thesis deriving the backpropagation delta rule in
-tensor form, was prototyped in Java in the early 2000s, and was set aside in 2015
-on the arrival of TensorFlow. The idea, letting a search choose the architecture
-instead of a human, lines up with what the field now calls **Neural Architecture
-Search (NAS)** and **AutoML**. This is a clean re-implementation of that idea in
-C99.
-
-## The goal
-
-Not a predictor whose architecture you hand-specify:
-
-```text
-predict(TrainingSet, TestingSet, Topology, Activation, Jitter,...)
-```
-
-but one handed only the problem, which finds the rest itself:
-
-```text
-self_modifying_predict(TrainingSet, TestingSet, Error)
-```
-
-A population of networks is searched by mutating layer counts and widths, and by
-co-evolving each candidate's own **training hyper-parameters** (learning rate,
-momentum, and hidden activation function), selecting on held-out validation
-performance; each candidate's weights are trained by backpropagation (the 1997
-delta rule). Those hyper-parameters were arguments of the top signature and are
-now discovered instead of specified, a concrete step toward the bottom one. (On
-XOR the search reliably finds, on its own, that a ReLU hidden layer with high
-momentum solves it near-exactly.)
-
-Layers are also **structural**: each hidden layer can evolve between a dense one
-and a weight-shared, locally-connected **convolution-like** kind. The **1997 thesis**
-argued that the architecture's inductive bias carries much of the work, and that such
-heuristics often have to be built into the topology by hand. The further **bet**, that
-a *search* which finds and recombines good structure, in the best case **rediscovering
-LeCun's topology** (local receptive fields, shared weights) on its own, should beat
-plain random, came in **2002**, after I had built genetic algorithms in industry. The
-thesis illustrated that structure with
-my own 1997 redrawing of LeCun's receptive-field diagram, a single unit fed by a
-small window of the previous layer:
-
-![My original 1997 redrawing of LeCun's receptive field: one unit in the next layer wired to a small window of the previous layer, the weight-sharing feature detector that convolution generalizes.](doc/feature_detector_field.png)
-
-*My original 1997 redrawing of LeCun's receptive-field diagram, from the thesis: one
-unit fed by a small window of the previous layer. Shared across positions, this is a
-convolution.*
-
-**On NAS-Bench-101, that bet did not hold.** On the real NAS-Bench-101 cell space a
-crossover that recombines the architecture's structure is no better than a
-structure-blind one, and worse at large budget, and no search meaningfully beats random
-*there* (see the paper below). Under an *energy budget*, though, the picture differs:
-a directed search finds more structured filters than random, and is modestly more accurate too
-(the emergence study below). That structural edge holds even when the search budget is scaled *quadratically* with
-problem size, so it reflects the landscape, not a search-budget artifact.
-Structure still matters to a network's accuracy; what does not hold is that a
-structure-aware search extracts an edge a random sampler cannot. The convolutional
-backprop is still verified by a numerical gradient check in the test suite.
-
-The search returns the architecture that generalizes best on validation, with the
-standard caveat that the search itself can overfit the validation split, so a
-final untouched test set is needed to judge it.
-
-Recombining two arbitrary topologies by crossover is a known hard problem (the
-competing-conventions problem, where two networks encode the same function with
-permuted units), so the default follows Real et al.'s mutation-only evolution.
-Crossover is no longer left open; it is now studied directly (see the paper
-below). On deceptive trap functions, where separable building blocks exist by
-construction, crossover decisively beats mutation, and its advantage grows with the
-number of blocks. On the real NAS-Bench-101 cell space, no crossover meaningfully
-beats random search. Every arm edges random with a large signed-rank z (2.0 to
-14.4 over 800 seeds a cell), but by 0.07 to 0.17 accuracy points, inside the
-benchmark's own training noise. Against a plain structure-blind (flat) crossover
-the structured operators do not pay: recombining the two dimensions separately
-(`axis`) and role-matched node-wise recombination with competing conventions
-removed (`aligned`) lose to flat at every budget. Transplanting whole
-input-to-output paths (`path`) is the exception, winning at the smallest budget
-(50 evals: 93.520 vs 93.484, 401/293) and falling behind as the budget grows, so
-structure helps while evaluations are scarce and stops helping once they are not.
-Crossover helps only where the space carries recombinable building blocks; the
-real cell space barely does.
-
-## Where this sits today
-
-The idea lines up with what the field now calls:
-
-- **Neural Architecture Search (NAS)**: automating the design of network
- topology, brought to scale by Zoph and Le (2017) and surveyed by Elsken et al.
- (2019).
-- **AutoML**: automating the whole model-construction pipeline (Hutter et al.,
- 2019).
-
-Following the Elsken survey, NAS methods differ mainly in *search strategy*:
-reinforcement learning (Zoph and Le, 2017), gradient-based or differentiable
-(DARTS, 2019), Bayesian optimization, random search, and evolutionary search.
-**SMBPANN uses evolutionary search**, evolving the architecture while training
-weights by gradient descent. Its closest relatives are Real et al. (*Large-Scale
-Evolution*, 2017; *AmoebaNet*, 2019), which do exactly that. This contrasts with
-classical **neuroevolution** such as NEAT (Stanley and Miikkulainen, 2002), which
-evolves both topology *and* weights and uses no gradient information at all:
-SMBPANN sits on the evolutionary-NAS side of that line, not the NEAT side.
-
-Population-based search is not new ground for the author: an earlier project
-applied a genetic algorithm to **label placement** (positioning labels without
-overlap in a limited space, a classic combinatorial optimization problem), the
-same family of search now turned on network topology.
-
-**A falsifiable question drives the project:** does an evolutionary
-architecture search justify its compute over cheap baselines, random search in
-particular? Bergstra and Bengio (2012) showed plain random search is a strong
-baseline for hyper-parameter optimization; Li and Talwalkar (2019) showed random
-search *with weight sharing* is competitive with ENAS and DARTS on standard NAS
-benchmarks, while also documenting the field's reproducibility problems. SMBPANN
-is built to test its own genetic search against a matched-compute random-search
-control. This becomes a real contest only in a search space large and structured
-enough for a GA to exploit topological structure a random sampler cannot;
-enlarging the space beyond the current small one is a design target, not yet
-reached.
-
-## Language: C
-
-SMBPANN is written in **C99**, in the coding discipline of the
-[AIS](https://github.com/Anode1/ais) project: one concept per `.c` and `.h`,
-bounded strings, return codes, single-exit cleanup, and a plain `make` build with
-no framework or dependency. The choice is about fit: for this workload C is the
-simplest tool that does the job well.
-
-- **Concurrency by process, not by thread.** The evolutionary search is
- embarrassingly parallel, because candidates are independent. Each candidate is
- evaluated in its own **process**, launched from a shell coordinator sized to the
- CPU count, exchanging plain text with the parent. There is no shared memory, so
- there are no data races and no synchronization code to get wrong, and a
- candidate that crashes takes down only its own worker, not the run. For
- independent-candidate search there is nothing simpler that is also correct.
-- **Streaming data, bounded memory.** Backpropagation is inherently piecewise: the
- engine trains on one example at a time. A worker streams its dataset in pieces
- with a bounded footprint, so dataset size never dictates memory, and a read-only
- data file is shared across all workers for free by the operating system's page
- cache.
-- **Manual memory, disciplined.** Following AIS, allocation happens only at
- construction (`net_new`, `trainer_new`), the train and infer hot path allocates
- nothing, and the population carves each generation from a Mark/Release arena.
- Peak footprint is computable by hand.
-- **Safety by isolation and tools.** C is not memory-safe the way
- Java, Rust, or SPARK-verified Ada are; a bug can corrupt memory. Two things
- contain that here: process isolation (a fault stays in one worker), and the test
- suite run under AddressSanitizer and UBSan on every change, over the stack-first
- discipline that keeps most of the bug classes from arising in the first place.
- That is containment suited to a research tool, not a proof of memory safety.
-
-### Why C, and not Ada or Rust?
-
-Both Ada (with SPARK) and Rust are memory-safe and were seriously considered; an
-Ada 2012 implementation of this engine was written and is preserved in the git
-history. C won on fit for *this* problem. The search is embarrassingly parallel,
-so process isolation gives synchronization-free concurrency without a
-language-level thread-safety guarantee; the data streams, so there is no large
-shared structure to manage; and the memory pattern (allocate once, an arena per
-generation) is simple enough that manual management plus sanitizers is adequate.
-The safety the heavier languages add applies mostly to shared-memory threading
-and complex ownership, neither of which this design uses. C also keeps the
-toolchain and the code smallest and most portable, and reuses the disciplined C
-foundation the project already had.
-
-## Design principles
-
-From the [AIS](https://github.com/Anode1/ais) project:
-
-- one concept per `.c` and `.h`; clear, literal names;
-- allocation only at construction, so the train and infer hot path allocates
- nothing;
-- no framework, no dependency; a plain `make` and `cc` build;
-- reproducible by construction: a seeded PRNG, no wall-clock in the engine;
-- regression tests from the smallest cases up, run under sanitizers (XOR is the
- first gate).
-
-## Layout
-
-```
-. the C99 engine: rng, act, net, train, data, arena, genome
- smbpann (worker) + evolve (search); scripts/evaluate.sh (coordinator)
-validation/ standalone probes: bbtest (trap control), nasxover (NAS-Bench-201),
- nb101 + nb101_extract (NAS-Bench-101 crossover study),
- emerge_* (the emergence study: energy-budget growth + the operators)
-legacy/java/ the original early-2000s Java prototype (object-graph design)
-```
-
-An Ada 2012 implementation lived here too and is preserved in the git history; C
-is the active language.
-
-## Status
-
-The engine and the search both run end to end:
-
-- `smbpann` trains a network of a given topology (built-in XOR, or a plain-text
- dataset) and prints a machine-readable `fitness` line;
-- `scripts/evaluate.sh` evaluates a whole population in parallel, one worker
- process per candidate, and ranks it;
-- `evolve` runs the evolutionary architecture search against a matched-compute
- random-search control.
-
-The unit-test suite (40 checks: rng, act, net, the XOR backprop regression,
-1D and 2D convolution gradient checks, checkpoints, arena, data, genome) runs
-clean under AddressSanitizer and UBSan.
-
-```sh
-make # build./smbpann and./evolve
-./smbpann # train the built-in XOR demo
-./evolve -i 2 -o 1 -P 8 -G 8 # evolve XOR topologies, GA vs random search
-make ut # run the unit-test suite
-```
-
-```text
-evolving 8 topologies over 8 generations (elite 2, seed 1)
-gen 1 GA best=4.19705e-06 (2,8,11,15,1) RAND best=4.78733e-06 (2,4,4,1)
-...
-final: GA 2.62043e-06 (2,14,15,1) vs RAND 3.20376e-06 (2,7,14,1) [64 evaluations each]
-```
-
-XOR is only a smoke test (its space is tiny and every topology solves it). For a
-real test, `scripts/benchmark.sh` runs the same race on a self-contained synthetic
-task where topology actually matters (generated by `gentask`, reproducible from a
-seed). It compares a fixed mutation rate against the same rate left free to
-**self-adapt** (the ES idea, Rechenberg and Schwefel: the rate lives in the genome,
-perturbs log-normally at each birth, and selection keeps whatever value produced
-good offspring). Ten seeds per cell. Each cell reports two numbers: **wins** is how
-many of the ten seeds the GA finished with a lower final test-MSE than its
-matched-compute random control, and **gap** is the mean of (random's test-MSE minus
-the GA's) over the ten seeds, so a **positive gap means the GA did better** (lower
-error). Five wins of ten is a coin-flip; the gaps are small.
-
-| starting rate (`-M`) | fixed: wins / 10 | fixed: mean gap | self-adaptive: wins / 10 | self-adaptive: mean gap |
-|---|---|---|---|---|
-| 1 | 5 | +0.0021 | 8 | +0.0026 |
-| 3 | 5 | +0.0004 | 6 | +0.0017 |
-| 6 | 5 | +0.0009 | 7 | +0.0023 |
-
-Two reads. First, with a **fixed** rate the GA is about a coin-flip against
-random (5 of 10) whatever the rate, with only a small positive mean gap: in a
-search space this small it does not clearly beat an exhaustive random sampler,
-reproducing the Bergstra and Bengio / Li and Talwalkar result. Second,
-**self-adaptation helps, consistently and modestly**: it wins more often (6 to 8 of
-10) and by a wider margin at every starting rate, and it removes the need to pick
-the rate at all. You can watch the rate anneal within a run, higher early to
-explore, lower later to refine (for example 1.00, then 2.28, then 1.35 on XOR).
-
-The effect is real but small, and quieter than a first, noisier pass suggested (a
-3-seed run had shown a fixed rate *losing* at M=1 and a mutation-rate "sweet spot";
-ten seeds regress both to the mean). That is the value of more seeds.
-
-Does a *bigger* search space favor the directed search, as the small-space result
-hinted? At a fixed budget, the opposite. Enlarging the space to five layers by
-twenty-eight wide (from three by sixteen), holding the roughly 100 evaluations
-fixed, and re-drawing a fresh learnable task for each of 15 seeds, the GA does
-**worse** than random: it wins 5 of 15 self-adaptive and 4 of 15 fixed, with
-random better on average (gap about -0.003). The cause is budget, not the search:
-the same roughly 100 evaluations now cover a far larger space, so the GA's local,
-gradient-like convergence settles near its random start while an exhaustive random
-sampler keeps covering ground. It is the exploration-versus-exploitation trade-off
-in the open, and it confirms the intuition that broad random sampling wins once
-the space outgrows the search's budget. Giving evolution a fair chance in a bigger
-space means scaling the population and generations with it.
-
-So that is the next experiment: the same bigger space, scaling the budget from 96
-up through 384 to 768 evaluations, eight fresh-task seeds. The gap narrows toward
-zero (from about -0.003 to about -0.0006), and at the largest budget the fixed
-variant even edges positive (5 of 8, +0.0021), but the GA never decisively
-overtakes random, and the 8-seed win counts are noisy and non-monotone. Two things
-temper this: the win margin is small and the landscape nearly flat; and these
-budget runs are *not* a controlled sweep, because to bound wall-clock the
-per-candidate training was cut as the budget grew (epochs 1000 to 500), and fewer
-epochs flatten the fitness signal on their own, so the narrowing cannot be credited
-to budget alone. A controlled sweep (vary only the generations) is the clean next
-step.
-
-The overall tendency: random search is a strong baseline for architecture
-search at this scale; self-adaptation beats a fixed mutation rate reliably by a
-little (the one cleanly controlled comparison); and in a bigger search space the GA
-does not reliably beat random at any budget we tried, hovering near parity.
-Consistent with the field (Bergstra and Bengio 2012; Li and Talwalkar 2019), and
-reproduced here from scratch. Each experiment is a one-command run
-(`scripts/benchmark.sh`, with `ADAPT`, `LMAX`, `WMAX`, `POP`, `GENS`, `ELITE`,
-`MUT`, `RUNS`, and the task size as environment variables).
-
-## Error control
-
-The comparison above fixes the budget and asks who has the lower error. But the
-top-line signature `self_modifying_predict(TrainingSet, TestingSet, Error)` asks
-the opposite: you hand it the error you want, and it searches UNTIL it gets there.
-`evolve -E error` does exactly that, running until the best validation error
-reaches the target (with `-G` a safety cap) and reporting which generation each
-method arrived. The fitness the search minimizes IS that validation error, so a
-single number is both the objective and the stop.
-
-This turns the question from "whose error is lower at a fixed budget" into "who
-reaches the target with less work", which is what a user of the interface actually
-cares about. `scripts/errortest.sh` runs the time-to-target race over many seeds
-and reports, for each method, how often and in how few generations it reaches the
-target:
-
-```sh
-TARGET=0.12 RUNS=30 GENS=60 scripts/errortest.sh
-```
-
-## Paper
-
-The write-up is the emergence study, published as *The Imposed and Emergent Pieces of Convolution
-Under an Energy Budget* and archived at <https://doi.org/10.5281/zenodo.21423177> (concept DOI, always resolving to the latest version).
-It is on what does, and does not, emerge, framed by the
-prune/clone/translate/recombine operators, with the negatives kept and every number reproducible from
-one `make`. It opens from the negative result that motivates it: on the real NAS-Bench-101 cell space
-*searching* for structure does not beat random search (a trap-function positive control shows crossover
-helps only where separable building blocks exist), so instead of searching for the architecture, the
-paper grows it, and §2.4 reconciles the two, directed search beats random only when the objective can be
-climbed. That crossover study's code lives in `validation/` (`nb101*`, `nasxover`); its standalone
-write-up has been folded into this paper. 
-
-## The emergence study
-
-A second, larger note comes at the same 1997 ambition from the other side. Instead of *searching* whole
-topologies, it **grows** one from an **exhaustive (fully-connected) seed under an energy budget**, an
-evolutionary search that pays for every connection, and asks *which pieces of convolution
-emerge, and which do not*.
-
-![The main idea: an exhaustive, tangled network becomes an ordered convolution through a few structural operators.](images/fig_main_idea.svg)
-
-The frame is: **impose the priors that are real symmetries of the domain**, *locality* (information is
-local) and *translatability* (a signal is the same shifted over), and let a few biological operators
-(**prune, clone, translate, recombine**) assemble and refine the rest. Of the four, only *prune* runs
-inside the energy GA; *clone* and *translate* are studied as fixed shared-versus-unshared architectures,
-and *recombine* as a search over block sequences, each an isolated probe rather than one running
-developmental GA. They are studied one at a time and then **chained in a core developmental run** (find a
-block, then clone and translate it). That chain's +0.25 over search-from-scratch is the
-*same weight-sharing data-efficiency* effect (one tiled block learns from every position while independent
-per-position detectors starve), shown inside a pipeline, not a separate "reuse beats re-search" mechanism.
-And when the search must **discover** the decomposition itself, given only the composite label and an
-energy budget, **composition does not cleanly emerge without supervision** (the channels under-specialize
-and the energy-selected count overshoots), the paper's sharpest boundary. Real data and scale, not
-another operator, are the next step.
-
-![The four operators as A → B: prune, clone, translate, recombine, each with the exact action written under the arrow.](images/fig_operators.svg)
-
-The map that comes out:
-sparse, task-relevant connectivity emerges cleanly, and weight-sharing is *adopted* when
-translation-invariance rewards it, and a **compact aligned local filter emerges only under grouped
-mutation** on the shared feature, not under per-connection pruning, with a crisp mechanism for *why*
-(once weights are shared, connection-count no longer gradients parameter-count, so a single-edge mutation
-cannot tighten the kernel; the whole shared offset is the right unit). On top of the imposed priors, the free
-dimensions, depth, then emerge to fit the task.
-
-What is genuinely new is that evolutionary energy-emergence map from an exhaustive seed and its
-boundaries, distinct from gradient pruning (Optimal Brain Damage, Lottery Ticket), from DARTS'
-gradient-relaxed supernet, and from NEAT's grow-from-minimal. A second finding, and the resolution of
-this repo's earlier crossover null: under the energy budget a directed search finds a **tidier** filter
-than random sampling and is **modestly more accurate** too (a large structural win plus a small but significant task edge, surviving a denoising control),
-which reconciles the two, directed search beats random exactly when the objective can be *climbed* and
-ties it when the landscape is flat (as on NAS-Bench-101). The rest reproduces known inductive-bias
-results (weight-sharing is data-efficient, LeCun 1989; receptive field ≈ depth) with a *fair baseline*
-and full reproducibility. Every claim is a small, seeded, one-`make` probe, the negatives kept. See the paper at <https://doi.org/10.5281/zenodo.21423177>, and `validation/emerge_*.c` for the probes behind every number.
-
-## Roadmap
-
-1. **Foundation**: flat-array FFNN, backprop with momentum, XOR. *(done)*
-2. **Arena allocator**: the Mark/Release pool the population carves from. *(done)*
-3. **Datasets**: plain-text train and test data. *(done)*
-4. **Parallel evaluation**: a shell coordinator (`scripts/evaluate.sh`) that
- launches one worker process per candidate, sized to the CPU count, exchanging
- fitness as plain text and ranking the results. *(done)*
-5. **The evolutionary search** (`evolve`): a population of topologies, mutation,
- selection on validation fitness, raced against a matched-compute random-search
- control. *(done)*
-6. **A reproducible benchmark** (`gentask` + `scripts/benchmark.sh`): the GA and
- its matched random-search control on a self-contained synthetic task where
- topology matters, over several seeds, reproducible from a seed with no
- downloads. *(done)*
-7. **Error control** (`evolve -E` + `scripts/errortest.sh`): the search runs until
- it reaches a target validation error, realizing the top-line
- `self_modifying_predict(Train, Test, Error)` signature, and the time-to-target
- race replaces fixed-budget fitness as the measure. *(done)*
-8. **Crossover on real NAS benchmarks** (`bbtest`, `nasxover`, `nb101`): a
- trap-function positive control, then a four-operator crossover study on
- NAS-Bench-201 and NAS-Bench-101. The accuracy tables are extracted from the
- official releases by a small pure-C decoder (`nb101_extract.c`), no PyTorch or
- TensorFlow; the NAS-Bench-101 fitness oracle is isomorphism-correct by
- brute-force canonicalization and self-tested. Finding: crossover wins where
- building blocks exist (traps) but not on the real cell space, where nothing
- meaningfully beats random. *(done)*
-
-9. **The emergence study** (`validation/emerge_*`, paper at <https://doi.org/10.5281/zenodo.21423177>): coming
- at the 1997 ambition from the other side, *growing* a topology from an exhaustive seed under an
- energy budget, a map of what does and does not emerge, and the prune/clone/translate/
- recombine operators, each a small reproducible probe with its negatives kept. *(in progress)*
-
-See [`AGENTS.md`](AGENTS.md) for the developer contract and module map.
-
-## Literature
-
-*Evolutionary Neural Architecture Search (SMBPANN's approach: evolve topology,
-train weights by backprop):*
-- E. Real, S. Moore, A. Selle, et al. *Large-Scale Evolution of Image
- Classifiers.* ICML 2017.
-- E. Real, A. Aggarwal, Y. Huang, Q. V. Le. *Regularized Evolution for Image
- Classifier Architecture Search* (AmoebaNet). AAAI 2019.
-
-*Neural Architecture Search and AutoML, broadly:*
-- B. Zoph, Q. V. Le. *Neural Architecture Search with Reinforcement Learning.*
- ICLR 2017.
-- H. Liu, K. Simonyan, Y. Yang. *DARTS: Differentiable Architecture Search.*
- ICLR 2019.
-- T. Elsken, J. H. Metzen, F. Hutter. *Neural Architecture Search: A Survey.*
- JMLR, 2019.
-- F. Hutter, L. Kotthoff, J. Vanschoren (eds.). *Automated Machine Learning:
- Methods, Systems, Challenges.* Springer, 2019 (open access).
-
-*Classical neuroevolution (evolving topology and weights, the contrast case):*
-- K. O. Stanley, R. Miikkulainen. *Evolving Neural Networks through Augmenting
- Topologies* (NEAT). Evolutionary Computation 10(2), 2002.
-- K. O. Stanley, J. Clune, J. Lehman, R. Miikkulainen. *Designing neural networks
- through neuroevolution.* Nature Machine Intelligence, 2019.
-- X. Yao. *Evolving Artificial Neural Networks.* Proceedings of the IEEE 87(9),
- 1999.
-
-*Baselines and reproducible benchmarks:*
-- J. Bergstra, Y. Bengio. *Random Search for Hyper-Parameter Optimization.*
- JMLR, 2012.
-- L. Li, A. Talwalkar. *Random Search and Reproducibility for Neural Architecture
- Search.* UAI 2019.
-- C. Ying, A. Klein, E. Christiansen, E. Real, K. Murphy, F. Hutter.
- *NAS-Bench-101: Towards Reproducible Neural Architecture Search.* ICML 2019.
-- X. Dong, Y. Yang. *NAS-Bench-201: Extending the Scope of Reproducible Neural
- Architecture Search.* ICLR 2020.
-
-*When directed search beats random (the §2.4 principle, known theory):*
-- S. Droste, T. Jansen, I. Wegener. *On the analysis of the (1+1) evolutionary
- algorithm.* Theoretical Computer Science 276, 2002 (Needle vs OneMax: a gradient is
- what separates directed search from random).
-- M. Mitchell, J. H. Holland, S. Forrest. *When Will a Genetic Algorithm Outperform
- Hill Climbing?* NeurIPS 1993.
-- T. Jones, S. Forrest. *Fitness Distance Correlation as a Measure of Problem
- Difficulty for Genetic Algorithms.* ICGA 1995.
-- D. H. Wolpert, W. G. Macready. *No Free Lunch Theorems for Optimization.* IEEE
- Trans. Evolutionary Computation 1(1), 1997.
-
-*Which pieces of a convolution are learned vs imposed (the paper's central question):*
-- A. Ingrosso, S. Goldt. *Data-driven emergence of convolutional structure in neural
- networks.* PNAS 119(40), 2022.
-- B. Neyshabur. *Towards Learning Convolutions from Scratch.* NeurIPS 2020.
-- Z. Wang, L. Wu. *Theoretical Analysis of Inductive Biases in Deep Convolutional
- Networks.* NeurIPS 2023.
-- A. Lahoti, S. Karp, E. Winston, A. Singh, Y. Li. *Role of Locality and Weight Sharing
- in Image-Based Tasks.* arXiv:2403.15707, 2024.
-
-*Emergence of structure under a cost / efficient-coding budget (nearest to our approach):*
-- B. A. Olshausen, D. J. Field. *Emergence of simple-cell receptive field properties by
- learning a sparse code for natural images.* Nature 381, 1996.
-- J. Clune, J.-B. Mouret, H. Lipson. *The evolutionary origins of modularity.* Proc. R.
- Soc. B 280, 2013.
-- H. Mengistu, J. Huizinga, J.-B. Mouret, J. Clune. *The Evolutionary Origins of
- Hierarchy.* PLOS Comput. Biol. 12(6), 2016.
-
-*Foundations:*
-- D. E. Rumelhart, G. E. Hinton, R. J. Williams. *Learning representations by
- back-propagating errors.* Nature 323, 1986.
-- V. Gavrilov. *Backpropagation Feed-Forward Neural Networks.* Seminar thesis,
- 1997 (the mathematics the engine implements, cited by section in the source).
- <https://doi.org/10.5281/zenodo.20450525>
-
-*Companion work by the author (cited in the paper):*
-- V. Gavrilov. *Intelligence Is the Discovery of Compressors.* 2026.
- <https://doi.org/10.5281/zenodo.20440110> (the compression / description-length
- frame the energy budget instantiates; evolutionary search is one of its
- substrate levels of compressor discovery).
-- V. Gavrilov. *Emergence Does Not Care About Substrate.* Companion essay, 2026.
- https://gavr144.substack.com/p/emergence-does-not-care-about-substrate
-
-*Grow-and-prune / dynamic sparse training (nearest neighbors to the path-independence test):*
-- D. C. Mocanu, E. Mocanu, P. Stone, et al. *Scalable training of artificial neural
- networks with adaptive sparse connectivity* (SET). Nature Communications 9, 2018.
-- U. Evci, T. Gale, J. Menick, P. S. Castro, E. Elsen. *Rigging the Lottery: Making
- All Tickets Winners* (RigL). ICML 2020.
-- H. Li, A. Kadav, I. Durdanovic, H. Samet, H. P. Graf. *Pruning Filters for Efficient
- ConvNets.* ICLR 2017 (structured pruning; the neighbor to the sharing/energy decoupling).
-
-## License
-
-GNU GPL v2 or later. Copyright (C) 2001 Vasili Gavrilov.
+# bpnn
+
+**A backpropagation feed-forward neural network in C99, and tools for measuring how much of a
+neural-network experiment's result is real.**
+
+The engine derives from a 1997 seminar thesis on the backpropagation delta rule in tensor form, was
+prototyped in Java in the early 2000s, and was re-implemented in C99 as part of
+[SMBPANN](https://github.com/Anode1/SMBPANN). This is a fork of that work with the evolutionary
+architecture search removed.
+
+## Why the search is gone
+
+SMBPANN used an evolutionary search as an instrument rather than an optimiser, asking which pieces of
+a convolution a search recovers unaided under a cost on connections. That produced one paper, one
+retracted draft, and a third result that survived three rounds of adversarial review only after
+shrinking a great deal. The recurring problem was the search: on the spaces we could afford it is a
+weak hill-climber that stalls, and measurements about it kept turning out to be confounded by the
+stalling rather than informative. On a public benchmark it lost to matched-budget random selection.
+
+The engine, the unit suite and the statistics tooling were never in doubt, so they are what carried
+over. SMBPANN is untouched and remains the reference implementation for the paper that cites it.
+
+## What is here
+
+    make            build ./bpnn
+    make ut         32 unit checks, the commit gate
+    make ut-asan    the same under AddressSanitizer
+    make ut-ubsan   the same under UBSan
+    make pedantic   -pedantic plus -Wextra -Wshadow -Wconversion, must be clean
+    make tools      pairstat, nb101_trials, nb101_signal (runs pairstat's self-test)
+
+The engine is a flat-array feed-forward network with the generalized delta rule and momentum,
+selectable activations, weight-shared 1-D convolution whose gradients are checked against finite
+differences, a 2-D convolutional front-end, a Mark/Release arena allocator, and plain-text datasets.
+Training allocates nothing on the hot path and peak footprint is computable by hand from the struct
+sizes and the topology.
+
+`validation/pairstat.c` is the piece most worth borrowing. It computes paired statistics with named
+tests: Wilcoxon signed-rank as primary, using an exact null by dynamic programming where ties permit
+and a tie-corrected normal approximation otherwise, always reporting which it used; an exact sign
+test; Hodges-Lehmann estimates with distribution-free intervals; a paired *t* as secondary; Holm
+correction across a declared family; and a minimum detectable effect, so a null result is bounded
+rather than merely asserted. It refuses to be trusted before passing `--selftest` against
+hand-computable cases.
+
+## What it is for now
+
+Measuring how much of a reported result survives replication. The first question is how much of a
+NAS benchmark's architecture ranking is training noise. NAS-Bench-101 trains every one of its 423,624
+architectures three separate times, and the distributed tables average those runs away;
+`validation/nb101_trials.c` keeps them. Retraining the same architecture moves validation accuracy by
+0.33 percentage points at the median and 42.7 at the 99th percentile, because about one architecture
+in a hundred sometimes trains and sometimes collapses to the accuracy of guessing. Architecture-search
+papers routinely contest differences smaller than the median.
+
+That question needs no search and no training, only table lookups, so nothing in it can be confounded
+by an optimiser. See `AGENTS.md` for the roadmap and for the specific mistakes this project has
+already paid for and intends not to repeat.
+
+## Provenance
+
+`validation/PROVENANCE_nas.md` gives the exact URLs and commands for both benchmarks, including a
+NAS-Bench-201 source that keeps per-seed values and needs neither Google Drive nor PyTorch. The
+archives are gitignored because they are large and re-fetchable.

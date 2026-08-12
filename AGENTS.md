@@ -1,160 +1,133 @@
-# AGENTS.md -- how to develop SMBPANN (for humans and AI agents)
+# AGENTS.md -- how to develop bpnn (for humans and AI agents)
 
-SMBPANN is a self-modifying backpropagation feed-forward neural network
-(evolutionary Neural Architecture Search), written in **C99** in the coding
-discipline of the **AIS** project. The original early-2000s Java prototype is
-preserved in `legacy/java/`; an Ada 2012 rewrite was explored and lives in the
-git history. This is the operating manual.
+`bpnn` is a backpropagation feed-forward neural network in **C99**, and a set of tools for measuring
+how much of a neural-network experiment's reported result is real. It is a fork of
+[SMBPANN](https://github.com/Anode1/SMBPANN) with the evolutionary search removed.
+
+## Why this fork exists
+
+SMBPANN used an evolutionary search as an instrument for asking which pieces of a convolution a search
+recovers on its own. That line produced one published paper, one retracted draft, and a third result
+that survived three rounds of adversarial review only after shrinking considerably. The common factor
+in the failures was the search itself: on the spaces we could afford, the GA is a weak hill-climber
+that stalls, and nearly every measurement about it turned out to be confounded by that stalling rather
+than informative about anything else.
+
+So the search is gone and the engine stays. What we keep is the part that was never in doubt: a
+gradient-checked trainer, a unit suite, and a statistics tool that self-tests before it reports a
+p-value.
+
+**SMBPANN itself is untouched and must stay that way.** The paper under review cites it as the
+reference implementation and its appendix tells referees how to regenerate every experiment from that
+tree. Nothing here removes or renames anything that tree depends on; this is a copy.
 
 ## The contract (read first)
 
-- **`doc/dev/STYLE.md`** -- coding ideology: K&R/Robbins C99, one concept per
-  `.c`/`.h`, stack-first, allocation only at construction, bounded strings,
-  return codes, single-exit `goto` cleanup, sanitizer-gated. Non-negotiable.
-- **`net.h`, `train.h`, `arena.h`, `data.h`** -- the public API. The engine
-  implements them; `tests.c` tests them.
-- **The 1997 thesis** (`~/articles/BPFNN_Coursework`) -- the mathematics the
-  engine executes (forward pass, generalized delta rule, momentum, sigmoid);
-  `net.c` / `train.c` cite it by section.
+- **`doc/dev/STYLE.md`** -- coding ideology, inherited unchanged: K&R/Robbins C99, one concept per
+  `.c`/`.h`, stack-first, allocation only at construction, bounded strings, return codes, single-exit
+  `goto` cleanup, sanitizer-gated. Non-negotiable.
+- **`net.h`, `train.h`, `arena.h`, `data.h`** -- the public API.
+- **The 1997 thesis** (`~/articles/BPFNN_Coursework`) -- the mathematics the engine executes; `net.c`
+  and `train.c` cite it by section.
 
 ## Build and test
 
-    make            # build ./smbpann
-    make ut         # engine unit tests (tests.c, in-process) -- the commit gate
-    make ut-asan    # tests under AddressSanitizer
-    make ut-ubsan   # tests under UBSan
-    make pedantic   # -std=c99 -pedantic + extra warnings; must be clean
+    make            # build ./bpnn
+    make ut         # unit suite, 32 checks -- the commit gate
+    make ut-asan    # under AddressSanitizer
+    make ut-ubsan   # under UBSan
+    make pedantic   # -pedantic plus -Wextra -Wshadow -Wconversion; must be clean
+    make tools      # pairstat, nb101_trials, nb101_signal; runs pairstat's self-test
     make clean
 
-`make ut` is the commit gate; run `make ut-asan` and `make ut-ubsan` before
-committing. A warning is a defect.
-
-The worker: `./smbpann -t 2,4,1 -q` (or `-g 2,4,1|0.5|0.9|tanh` to also set the
-co-evolved learning rate, momentum, and activation) trains a topology and prints a
-machine-readable `RESULT ... spec=<genome> ... fitness=<x>` line (lower is better;
-a dataset via `-f file -i in -o out`, else built-in XOR); `./smbpann -h` for
-options. The coordinator fans a population
-of candidates (one topology per line) across `nproc` worker processes:
-
-    printf '2,2,1\n2,4,1\n2,8,1\n' | scripts/evaluate.sh          # leaderboard
-    COMMON="-f data.txt -i 2 -o 1" scripts/evaluate.sh pop.txt
-
-The search (`evolve`) drives that coordinator each generation and races the GA
-against a matched-compute random control (run from the repo root):
-
-    ./evolve -i 2 -o 1 -P 8 -G 8 -M 1              # XOR topologies, GA vs random
-    COMMON="-f data.txt -i N -o M -e 3000" ./evolve -i N -o M -P 16 -G 20 -M 2
-
-`-M` is the *initial* mutation rate; it then self-adapts per lineage (ES-style),
-so the run is far less sensitive to it. The per-generation `rate=` field shows the
-best individual's evolved rate (it anneals: higher early to explore, lower to
-refine).
-
-The reproducible benchmark generates a task where topology matters and races the
-GA against random over several seeds (env: DIM N FREQ NOISE RUNS POP GENS EPOCHS
-MUT). The GA is sensitive to MUT (mutation moves per offspring):
-
-    scripts/benchmark.sh                           # default settings
-    MUT=3 RUNS=5 scripts/benchmark.sh              # try a higher mutation rate
-
-Error control (`evolve -E error`) realizes the `self_modifying_predict(Train, Test,
-Error)` signature: the search runs UNTIL the best validation error reaches the
-target, with `-G` the safety cap, and reports which generation each method got
-there. The fitness we minimize IS that validation error, so one number is both the
-objective and the stop. `scripts/errortest.sh` runs this over many seeds and
-reports the time-to-target race (how often, and in how few generations, the GA
-reaches the target versus random) -- a fairer measure than final fitness at a
-fixed budget (env adds TARGET; a long, many-seed run is the intended use):
-
-    TARGET=0.12 RUNS=30 GENS=60 scripts/errortest.sh
+`make ut` is the commit gate. Run the sanitizers before committing. A warning is a defect.
 
 ## Module map
 
-    common.h   smb_real (=float), SMB_MAX_LAYERS, SMB_LINE_MAX
-    rng        deterministic xorshift PRNG (reproducible init + evolution)
-    act        activation functions: sigmoid, tanh, relu (selectable per net)
-    net        the network: flat weight matrices, forward pass, thesis init;
-               dense and weight-shared conv1d layer kinds; hidden layers use
-               net->activation, the output stays a dense sigmoid
-    train      backpropagation: the generalized delta rule with momentum;
-               conv layers share gradients across positions (gradient-checked)
-    arena      marker/Mark-Release allocator (the population's heap)
-    data       plain-text datasets + train/test split
-    genome     topology (each hidden layer evolves between dense and conv) +
-               co-evolved hyper-parameters (learning rate, momentum, activation);
-               the mutation rate is self-adaptive (ES-style). A candidate spec is
-               "topology|lrate|momentum|activation", a conv layer written cF:K.
-    main.c     the CLI / evaluation worker (getopt); emits a RESULT fitness line
-    evolve.c   the evolutionary search driver + matched random-search control
-    gentask.c  reproducible synthetic-task generator (a task where topology matters)
-    tests.c    -DUNIT_TEST unit suite: rng act net xor arena data genome
-    scripts/evaluate.sh    the parallel coordinator (one worker process/candidate)
-    scripts/benchmark.sh   the reproducible GA-vs-random benchmark (fixed budget)
-    scripts/errortest.sh   the time-to-target benchmark (error control, many seeds)
+    common.h        smb_real (=float), SMB_MAX_LAYERS, SMB_LINE_MAX
+    rng             deterministic xorshift PRNG. NOTE: 32-bit, period 2^32-1. Fine for a training
+                    run; NOT fine for a study drawing more than ~4e9 numbers. A measurement that
+                    exhausted this period silently reused draws and understated its own standard
+                    error by 2.5x. If a study is that large, use a 64-bit generator and say so.
+    act             sigmoid, tanh, relu
+    net             flat weight matrices, forward pass, thesis init; dense and weight-shared conv1d
+    train           the generalized delta rule with momentum; conv layers share gradients across
+                    positions (gradient-checked against finite differences)
+    conv2f          a 2-D convolutional front-end, F filters of KxK with pooling
+    arena           marker/Mark-Release allocator
+    data            plain-text datasets, train/test split
+    ckpt            weight checkpoints
+    main.c          the CLI worker; trains a topology and prints a RESULT line
+    tests.c         -DUNIT_TEST unit suite: rng act net xor arena data conv1d conv2f
 
-Three binaries share the engine objects: `smbpann` (worker, main.o), `evolve`
-(search, evolve.o), and `gentask` (gentask.o); the Makefile filters out the other
-programs' mains.
+    validation/pairstat.c      paired statistics with named tests -- see below
+    validation/nb101_trials.c  NAS-Bench-101 tfrecord -> text, KEEPING the three training runs
+    validation/nb101_signal.c  selection inflation against search effort
+    validation/PROVENANCE_nas.md  where the benchmark data comes from and how to regenerate it
 
-Memory: allocation lives only in the `*_new` / `*_init` / load paths; the
-train/infer hot path allocates nothing; every path frees on exit (`goto`
-single-exit). Peak footprint is computable by hand from the struct sizes plus the
-topology.
+## The statistics tool
 
-## Concurrency model
+`pairstat` is the most reusable thing in the repository and should be used rather than hand-rolled
+summaries. It computes Wilcoxon signed-rank as primary (exact null by dynamic programming where ties
+permit, tie-corrected normal approximation otherwise, and it always reports which was used), an exact
+sign test, Hodges-Lehmann estimates with distribution-free confidence intervals, a paired *t* as
+secondary, Holm correction across a declared family, and a minimum detectable effect so a null result
+is bounded rather than asserted. It is gated by `--selftest` against hand-computable cases.
 
-The evolutionary search is embarrassingly parallel: candidates are independent.
-Each is evaluated as its own **worker process**, launched by a shell coordinator
-sized to the CPU count, exchanging plain text with the parent. No shared memory,
-so no data races and no synchronization code; a crashing candidate takes down only
-its worker. Datasets stream one example at a time (bounded footprint; a read-only
-file is shared across workers by the OS page cache).
+Paired binary outcomes want an exact McNemar test, computed as a two-sided binomial on the discordant
+pairs.
+
+## What we learned the hard way, and will not repeat
+
+These are not general advice. Each one cost real work in the predecessor.
+
+1. **Score the target before tuning anything against it.** Hand-build the answer, score it under the
+   exact objective at full seed count, and confirm it is the argmax of an enumerated family. "Beats
+   the arms I chose" is a statement about the author's imagination.
+2. **A rank is a statistic, not a fact.** An argmax over noisy estimates favours whichever candidate
+   was luckiest. Report the winning margin beside the standard error of the scores that produced it,
+   and believe the ordering only when the margin clears it.
+3. **Enumerate the shapes the method actually visits**, not the shapes you expect. A family restricted
+   to the tidy cases certifies nothing about the untidy ones.
+4. **Check what the outcome shares with the selection statistic.** If quality is the mean of three
+   measurements and the method selected on two of them, it is selecting partly on the ground truth,
+   and roughly half of any apparent advantage is that overlap. Report a quantity the method could not
+   see.
+5. **Match the null on the property being claimed**, and include a matched-budget random control.
+   Without one, an arm comparison cannot be shown to rank methods worth running at all.
+6. **Verify pairing rather than asserting it.** Arms that consume different amounts of randomness
+   desynchronise immediately; re-seed per run from a run-indexed seed.
+7. **Pre-register the primary comparison, the equivalence margin, and what would refute it**, to a
+   timestamped file, before the pilot. Score the predictions afterwards including the wrong ones.
+8. **Keep an oracle.** After any refactor, rebuild from the previous source and confirm the result
+   table is byte-identical. This is how you prove a fix did not silently move an archived number.
+9. **Get an adversarial review from someone with no stake in the result**, and give one of them only
+   the code and outputs without your conclusions. Two such reviews reversed conclusions here twice.
+
+## Storage for large experiments
+
+For experiments that need to cache millions of intermediate results, use **AIS** rather than inventing
+storage here. This repository stays a compute-and-measure tree; per-seed outputs live as
+`scratch_*.out` files and anything larger belongs in AIS.
+
+## Where the compute actually goes
+
+Measured on a 4-core i7-1165G7, which is 8 hyperthreads and does **not** give 8 cores' throughput on
+compute-bound work; sizing a run as if it did overran one estimate by 40%.
+
+- One training run of the small engine: about 5.8 ms for 200 epochs over 96 examples.
+- A benchmark lookup: free. Experiments over precomputed benchmarks are not compute-bound at all,
+  and the most credible result in the predecessor cost essentially nothing.
+- Build the scaled trainer when an experiment demands shapes we do not have, and not before. A
+  general N-dimensional tensor library with autodiff is a framework, and frameworks are for humans.
 
 ## Roadmap
 
-1. Foundation: flat-array FFNN, backprop + momentum, XOR. *(done)*
-2. Arena allocator (Mark/Release). *(done)*
-3. Datasets: plain-text train/test split. *(done)*
-4. Parallel evaluation: `scripts/evaluate.sh` fans candidates to `nproc` worker
-   processes and ranks them by fitness. *(done)*
-5. The evolutionary search (`evolve`): population, mutation, selection on
-   validation fitness, against a matched-compute random-search control. *(done)*
-6. A reproducible benchmark (`gentask` + `scripts/benchmark.sh`): the race on a
-   self-contained synthetic task where topology matters, over several seeds.
-   *(done)* First finding: at one untuned setting the GA does not beat random;
-   the result is sensitive to mutation rate and search-space size. Real
-   NAS-Bench-101/201 (cell-based, multi-GB PyTorch) is future work.
-6. A reproducible benchmark: the search vs its random-search control on a standard
-   NAS benchmark (NAS-Bench-101 / 201).
-
-## Working with AI agents
-
-As in AIS: spawn focused subagents for isolatable work; a separate tester with
-fresh context writing the tests catches the implementer's assumptions; the main
-session locks the contract and runs `make ut` plus the sanitizers.
-
-## Autonomous (overnight) runs
-
-The long runs -- `scripts/tile_overnight.sh`, `scripts/tile_continuous.sh`,
-`scripts/run_pairstats.sh`, and the many-seed `errortest.sh` sweeps -- are
-launched and left; nobody is reading the output for hours. Two instructions
-belong in any task posted for that regime, because what ends a long session is
-not a capability gap:
-
-**Ground every progress claim in a tool result.** Before reporting progress,
-audit each claim against a tool result from this session. Only report work you
-can point to evidence for; if something is not yet verified, say so explicitly.
-If a probe fails, say so with the output; if a step was skipped, say that; when
-something is done and verified, state it plainly without hedging. A summary that
-reads well but was never checked against a `scratch_*.out` file is worse than no
-summary, because it looks like a finding.
-
-**Do not end the turn on an intention.** You are operating autonomously. The
-user is not watching in real time and cannot answer questions mid-task, so
-asking "Want me to...?" or "Shall I...?" will block the work. For reversible
-actions that follow from the original request, proceed without asking. Before
-ending your turn, check your last paragraph: if it is a plan, an analysis, a
-question, a list of next steps, or a promise about work you have not done
-("I'll...", "let me know when..."), do that work now with tool calls. End your
-turn only when the task is complete or you are blocked on input only the user
-can provide.
+1. **Benchmark noise.** How much of a NAS benchmark's architecture ranking is training noise? The
+   per-seed tables are already extracted, so this is table lookups: how often the ranking of two
+   architectures flips between training seeds, what fraction of published-sized differences sit
+   inside single-run noise, and what that implies for any result reported from one training run.
+   Needs no search and no training, so nothing is confounded by an optimiser.
+2. Undecided, pending (1). The candidate with an audience is measuring how much of test-time
+   training's reported gain survives an honest held-out split, since its per-problem choices are
+   made on the same handful of examples it adapts on.

@@ -19,7 +19,6 @@
 #include "conv2f.h"
 #include "common.h"
 #include "data.h"
-#include "genome.h"
 #include "net.h"
 #include "rng.h"
 #include "train.h"
@@ -202,121 +201,6 @@ int main(void)
             CHECK(0, "dataset_load succeeds");
         }
         remove(path);
-    }
-
-    /* genome: random within bounds, format/parse round-trip, safe mutation */
-    {
-        Rng r;
-        Genome g, g2;
-        char buf[256];
-        int i, ok = 1;
-        rng_seed(&r, 3);
-        genome_random(&g, 2, 1, 3, 16, &r);
-        CHECK(g.n >= 2 && g.n <= 5 && g.dim[0] == 2 && g.dim[g.n - 1] == 1,
-              "genome: random keeps fixed endpoints and layer bound");
-        genome_format(&g, buf, sizeof buf);
-        CHECK(genome_parse(&g2, buf) == 0 && g2.n == g.n
-              && g2.dim[0] == 2 && g2.dim[g2.n - 1] == 1,
-              "genome: format/parse round-trips");
-        for (i = 0; i < 200; i++) {
-            Net *nn;
-            genome_mutate(&g, 3, 16, &r);
-            if (g.dim[0] != 2 || g.dim[g.n - 1] != 1 || g.n < 2 || g.n > 5)
-                ok = 0;
-            /* every mutated genome (dense or conv) must build a net whose
-             * per-layer widths match the genome's -- the recompute invariant */
-            nn = net_build(g.dim, g.kind, g.nfilt, g.ksize, g.n);
-            if (nn == NULL) {
-                ok = 0;
-            } else {
-                size_t j;
-                for (j = 0; j < g.n; j++)
-                    if (nn->dim[j] != g.dim[j])
-                        ok = 0;
-                net_free(nn);
-            }
-        }
-        CHECK(ok, "genome: mutation stays valid and builds a matching net");
-    }
-
-    /* genome: self-adaptive reproduction keeps endpoints and a bounded rate */
-    {
-        Rng r;
-        Genome parent, child;
-        int i, ok = 1;
-        rng_seed(&r, 9);
-        genome_random(&parent, 2, 1, 3, 16, &r);
-        parent.rate = 2.0f;
-        for (i = 0; i < 200; i++) {
-            genome_reproduce(&child, &parent, 3, 16, &r);
-            if (child.dim[0] != 2 || child.dim[child.n - 1] != 1
-                || child.n < 2 || child.n > 5)
-                ok = 0;
-            if (!(child.rate > 0.0f) || child.rate > 100.0f)
-                ok = 0;
-            parent = child;   /* let the rate drift over a lineage */
-        }
-        CHECK(ok, "genome: self-adaptive reproduce keeps endpoints and a bounded rate");
-    }
-
-    /* genome: hyper-parameters start in range, survive the spec, and stay
-     * bounded as they co-evolve */
-    {
-        Rng r;
-        Genome g, g2, c;
-        char buf[256];
-        int i, ok = 1;
-        rng_seed(&r, 11);
-        genome_random(&g, 2, 1, 3, 16, &r);
-        CHECK(g.lrate >= 0.1f && g.lrate < 0.8f
-              && g.momentum >= 0.5f && g.momentum < 0.95f
-              && g.activation >= 0 && g.activation < ACT_COUNT,
-              "genome: random hyper-parameters start in range");
-        genome_format(&g, buf, sizeof buf);
-        CHECK(genome_parse(&g2, buf) == 0 && g2.activation == g.activation,
-              "genome: spec round-trips the activation gene");
-        for (i = 0; i < 300; i++) {
-            genome_reproduce(&c, &g, 3, 16, &r);
-            if (c.lrate < 0.01f || c.lrate > 2.0f
-                || c.momentum < 0.0f || c.momentum > 0.99f
-                || c.activation < 0 || c.activation >= ACT_COUNT)
-                ok = 0;
-            g = c;
-        }
-        CHECK(ok, "genome: co-evolved hyper-parameters stay bounded");
-    }
-
-    /* genome: crossover splices two parents into a buildable child that keeps the
-     * problem's fixed endpoints, respects the depth bound, and stays in range */
-    {
-        Rng r;
-        Genome a, b, c;
-        int i, ok = 1;
-        rng_seed(&r, 21);
-        for (i = 0; i < 300; i++) {
-            Net *nn;
-            genome_random(&a, 3, 1, 3, 16, &r);
-            genome_random(&b, 3, 1, 3, 16, &r);
-            genome_crossover(&c, &a, &b, 3, 16, &r);
-            if (c.n < 2 || c.n > 5 || c.dim[0] != 3 || c.dim[c.n - 1] != 1)
-                ok = 0;
-            if (!(c.rate > 0.0f) || c.lrate < 0.01f || c.lrate > 2.0f
-                || c.momentum < 0.0f || c.momentum > 0.99f
-                || c.activation < 0 || c.activation >= ACT_COUNT)
-                ok = 0;
-            /* the spliced child must build a net whose widths match its genes */
-            nn = net_build(c.dim, c.kind, c.nfilt, c.ksize, c.n);
-            if (nn == NULL) {
-                ok = 0;
-            } else {
-                size_t j;
-                for (j = 0; j < c.n; j++)
-                    if (nn->dim[j] != c.dim[j])
-                        ok = 0;
-                net_free(nn);
-            }
-        }
-        CHECK(ok, "genome: crossover splices a valid, buildable child");
     }
 
     /* conv1d: forward (weight sharing), gradient correctness, and learning */
