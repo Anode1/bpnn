@@ -65,7 +65,7 @@ static void     rseed(uint32_t s){ rs = s ? (uint64_t)s * 0x9E3779B97F4A7C15ull 
 static uint32_t rbelow(uint32_t m){ return m ? r32()%m : 0u; }
 static int envint(const char *k, int d){ const char *v=getenv(k); return v? atoi(v): d; }
 
-static int load(const char *path)
+static int load(const char *path, double minv)
 {
     FILE *f = fopen(path, "r");
     char line[512];
@@ -75,7 +75,7 @@ static int load(const char *path)
         if(*p == '#') continue;
         for(k = 0; k < NTRIAL; k++){
             char *e; v[k] = (float)strtod(p, &e);
-            if(e == p || v[k] <= 0.0f){ bad = 1; break; }
+            if(e == p || v[k] <= 0.0f || v[k] < minv){ bad = 1; break; }
             p = e;
         }
         if(bad || narch >= MAXARCH) continue;
@@ -128,7 +128,9 @@ int main(int argc, char **argv)
     double pooled = 0;
     static const int topk[4] = { 100, 1000, 10000, 0 };   /* 0 means all */
 
-    if(load(path) < 0) return 1;
+    { double minv = (double)envint("MINV", 0);
+      if(load(path, minv) < 0) return 1;
+      if(minv > 0) printf("MINV=%.0f: architectures with any run below that are excluded.\n", minv); }
     rseed((uint32_t)envint("SEED", 20260812));
     for(i = 0; i < narch; i++) idx[i] = i;
 
@@ -151,7 +153,8 @@ int main(int argc, char **argv)
     qsort(idx, (size_t)narch, sizeof idx[0], cmp_desc);
     printf("RANK-CORRELATION CEILING: Kendall tau of a 1-run label against an independent 2-run label.\n");
     printf("No predictor scored against this benchmark's labels can exceed it.\n");
-    printf("  %-12s %10s %12s %10s\n", "subset", "tau", "+-SE", "tied pairs");
+    printf("  %-12s %10s %12s %10s %8s %10s %9s\n", "subset", "tau", "+-SE", "tied",
+           "sW/sB", "tau_pred", "resid");
     for(i = 0; i < 4; i++){
         int m = topk[i] ? (topk[i] < narch ? topk[i] : narch) : narch;
         double tau, se, tied;
@@ -159,7 +162,34 @@ int main(int argc, char **argv)
         tau_of(idx, m, pairs, perm[0], perm[1], perm[2], &tau, &se, &tied);
         if(topk[i]) snprintf(lab, sizeof lab, "top %d", m);
         else        snprintf(lab, sizeof lab, "all %d", m);
-        printf("  %-12s %10.4f %12.4f %9.1f%%\n", lab, tau, se, 100.0*tied);
+        /* THEORY. If quality has spread sigma_B over the subset and training noise sigma_W, then a
+         * 1-run label and an independent 2-run label are two noisy views of one quantity with
+         *     rho = sigma_B^2 / sqrt((sigma_B^2 + sigma_W^2)(sigma_B^2 + sigma_W^2 / 2))
+         * and for jointly normal variables Kendall tau = (2/pi) arcsin(rho). So the ceiling should be a
+         * function of the single ratio sigma_W/sigma_B rather than an independent property of each
+         * benchmark, and the top-k collapse should follow from sigma_B shrinking while sigma_W does not.
+         *
+         * sigma_B within the subset is estimated from the JUDGMENT run alone, whose variance is
+         * sigma_B^2 + sigma_W^2. That run took no part in choosing the subset, so it is not restricted by
+         * the selection; using the 3-run mean here would be, since the subset was chosen on the
+         * reference. sigma_W is the pooled within-architecture value over the same subset. */
+        { double m1 = 0, m2 = 0, sw = 0, vB, rho, tpred, ratio; int j2;
+          for(j2 = 0; j2 < m; j2++){
+              int a = idx[j2]; double x = vacc[a][perm[0]], mu, ss = 0; int k;
+              m1 += x; m2 += x*x;
+              mu = vmean[a];
+              for(k = 0; k < NTRIAL; k++) ss += (vacc[a][k]-mu)*(vacc[a][k]-mu);
+              sw += ss/2.0;
+          }
+          m1 /= m; m2 = m2/m - m1*m1; sw /= m;          /* m2 = sigma_B^2 + sigma_W^2, sw = sigma_W^2 */
+          vB = m2 - sw;
+          if(vB < 1e-12) vB = 1e-12;
+          rho   = vB / sqrt((vB + sw) * (vB + sw/2.0));
+          if(rho > 1.0) rho = 1.0;
+          tpred = (2.0/3.14159265358979323846) * asin(rho);
+          ratio = sqrt(sw / vB);
+          printf("  %-12s %10.4f %12.4f %9.1f%%  %8.3f %10.4f %+9.4f\n", lab, tau, se, 100.0*tied,
+                 ratio, tpred, tau - tpred); }
     }
     printf("  A published tau must be read against the row for the subset it was computed on. The top-k\n");
     printf("  rows are the relevant ones for predictors, which are used to rank good architectures.\n");
