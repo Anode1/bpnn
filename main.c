@@ -231,12 +231,9 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    /* -t gives the topology, else the XOR default 2-hidden-1. The co-evolved spec form
-     * (-g topology|lrate|momentum|activation) is gone with the search that produced it;
-     * hyper-parameters are set explicitly with -r, -m and -H. */
-    if (0) {
-        /* unreachable: kept so the else-if chain below reads unchanged */
-    } else if (topo_arg != NULL) {
+    /* -t gives the topology, else the XOR default 2-hidden-1. Hyper-parameters are set with
+     * -r, -m and -H. */
+    if (topo_arg != NULL) {
         if (parse_topology(topo_arg, dims, SMB_MAX_LAYERS, &nlayers) != 0) {
             fprintf(stderr, "smbpann: bad topology '%s'\n", topo_arg);
             return 2;

@@ -49,22 +49,26 @@ pedantic:
 # pairstat is the paired-statistics tool: Wilcoxon signed-rank (exact where ties permit),
 # exact sign test, Hodges-Lehmann with distribution-free intervals, paired t, Holm across a
 # declared family, and minimum detectable effect. It self-tests before it is trusted.
-tools: pairstat nb101_trials nb101_signal nb101_flip
+tools: pairstat nb101_trials nb201_extract nb101_flip nb101_signal validation/nb101_triples.txt
 	./pairstat --selftest
 
 pairstat: validation/pairstat.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 nb101_trials: validation/nb101_trials.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
-nb101_signal: validation/nb101_signal.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
-conv2d: validation/conv2d.c $(ENGINE:.o=.c)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-fsdd_frame: validation/fsdd_frame.c $(ENGINE:.o=.c)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:
 	rm -f *.o *.d $(PROG) bpnn_ut bpnn_ut_asan bpnn_ut_ubsan \
 	      pairstat nb101_trials nb101_signal nb101_flip conv2d fsdd_frame
 nb101_flip: validation/nb101_flip.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+
+# ---- benchmark tables projected to the triples the flip probe reads --------
+# NAS-Bench-101's archive table carries the graph as well; the measurement needs only the three
+# per-run accuracies, so project them rather than teaching the probe a second format.
+validation/nb101_triples.txt: validation/nasbench101_trials.txt
+	awk '!/^#/{n=$$1; b=2+n+1; print $$(b+1), $$(b+3), $$(b+5)}' $< > $@
+nb101_signal: validation/nb101_signal.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+nb201_extract: validation/nb201_extract.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)

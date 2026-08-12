@@ -56,7 +56,6 @@
 #define NBIN    8
 
 static float vacc[MAXARCH][NTRIAL];
-static float tacc[MAXARCH][NTRIAL];
 static int   narch = 0;
 
 /* 64-bit generator: a study drawing billions of numbers exhausts a 32-bit period and silently reuses
@@ -74,29 +73,26 @@ static uint32_t rbelow(uint32_t m){ return m ? r32()%m : 0u; }
 static int envint(const char *k, int d){ const char *v=getenv(k); return v? atoi(v): d; }
 static double envdbl(const char *k, double d){ const char *v=getenv(k); return v? atof(v): d; }
 
+/* Input is one architecture per line: NTRIAL whitespace-separated accuracies in percentage points.
+ * Lines beginning with # are comments. That is everything this measurement needs, so it is everything
+ * the format carries, and it lets one probe read any benchmark once projected to triples (see Makefile). */
 static int load(const char *path, double minv)
 {
     FILE *f = fopen(path, "r");
-    char line[1024];
+    char line[512];
     if(!f){ fprintf(stderr, "nb101_flip: cannot open %s\n", path); return -1; }
     while(fgets(line, sizeof line, f)){
-        char *p = line; int n, nt, k, bad = 0;
-        float v[NTRIAL], t[NTRIAL];
+        char *p = line; float v[NTRIAL]; int k, bad = 0;
         if(*p == '#') continue;
-        n = (int)strtol(p, &p, 10);
-        if(n < 2) continue;
-        while(*p == ' ') p++;
-        while(*p && *p != ' ') p++;                      /* adjacency bits */
-        for(k = 0; k < n; k++) (void)strtol(p, &p, 10);  /* op codes       */
-        nt = (int)strtol(p, &p, 10);
-        if(nt != NTRIAL) continue;
         for(k = 0; k < NTRIAL; k++){
-            v[k] = (float)strtod(p, &p);
-            t[k] = (float)strtod(p, &p);
+            char *e;
+            v[k] = (float)strtod(p, &e);
+            if(e == p){ bad = 1; break; }
+            p = e;
             if(v[k] <= 0.0f || v[k] < minv) bad = 1;
         }
         if(bad || narch >= MAXARCH) continue;
-        for(k = 0; k < NTRIAL; k++){ vacc[narch][k] = v[k]; tacc[narch][k] = t[k]; }
+        for(k = 0; k < NTRIAL; k++) vacc[narch][k] = v[k];
         narch++;
     }
     fclose(f);
@@ -105,10 +101,9 @@ static int load(const char *path, double minv)
 
 int main(int argc, char **argv)
 {
-    const char *path = argc > 1 ? argv[1] : "validation/nasbench101_trials.txt";
+    const char *path = argc > 1 ? argv[1] : "validation/nb101_triples.txt";
     long pairs = (long)envint("PAIRS", 2000000), i;
     double minv = envdbl("MINV", 0.0);
-    (void)envdbl;
     /* bin edges in percentage points of the reference gap */
     static const double edge[NBIN] = { 0.05, 0.10, 0.20, 0.30, 0.50, 1.00, 2.00, 1e9 };
     static const char  *lab[NBIN]  = { "0.00-0.05", "0.05-0.10", "0.10-0.20", "0.20-0.30",
@@ -186,6 +181,29 @@ int main(int argc, char **argv)
     printf("%-11s %10s %12s\n", "ref gap pp", "pairs", "backwards");
     for(i = 0; i < NBIN; i++)
         if(rn[i]) printf("%-11s %10ld %11.1f%%\n", lab[i], rn[i], 100.0*rdis[i]/rn[i]);
+    /* The flip rate answers "is this claim backwards". The question a practitioner asks next is "what
+     * could I have resolved, and how many runs would I need". Both follow from the noise scale: the
+     * standard error of a difference between two architectures each trained n times is sigma*sqrt(2/n),
+     * so a gap delta is resolvable at 95% two-sided confidence when delta > 1.96*sigma*sqrt(2/n), i.e.
+     * n > 2*(1.96*sigma/delta)^2. Inverting at n=1 gives the smallest difference one run per side can
+     * establish at all: 1.96*sqrt(2)*sigma = 2.77*sigma.
+     *
+     * This is Gaussian and uses the MEAN within-architecture sigma. The per-architecture spread is
+     * heavy-tailed on NAS-Bench-101, so for an architecture drawn from the upper tail the requirement is
+     * far worse than the table says, and these figures are therefore optimistic rather than
+     * conservative. They are reported next to the empirical flip rates so the two can be compared. */
+    { double sig = sdsum/sdn;
+      static const double d[6] = { 0.10, 0.20, 0.30, 0.50, 1.00, 2.00 };
+      int q;
+      printf("\nRESOLUTION at this noise level (sigma = %.3f pp, Gaussian, mean sigma):\n", sig);
+      printf("  smallest difference ONE run per architecture can establish: %.2f pp\n", 2.77*sig);
+      printf("  %-12s %s\n", "difference", "runs needed per architecture");
+      for(q = 0; q < 6; q++){
+          double need = 2.0*(1.96*sig/d[q])*(1.96*sig/d[q]);
+          printf("  %8.2f pp %14.0f\n", d[q], need < 1.0 ? 1.0 : need);
+      }
+    }
+
     printf("\nRead the PRIMARY 0.10-0.30 rows: architecture-search papers contest differences of that\n");
     printf("size, and the rate beside them is the probability such a claim is backwards when each side\n");
     printf("rests on one training run. The last column is the share of pairs whose gap the two-run\n");
