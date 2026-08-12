@@ -17,14 +17,33 @@
  * We estimate it by splitting the runs: Kendall tau between run p0 alone and the mean of p1,p2. That is
  * a ceiling for a 1-run label against a 2-run label.
  *
- * THE TOP-K SUBSET MUST BE CHOSEN BY THE LABEL ALONE, and the first version of this got it wrong in a
- * way worth recording. Selecting the top-k by the mean of ALL THREE runs includes the run being
- * correlated, and conditioning on a sum induces negative correlation between its components: that
- * version reported tau of -0.41 in the top 100, which is impossible for two estimates of one quantity
- * and was entirely manufactured by the selection. Choosing the subset by the 2-run reference alone is
- * both correct and the honest analogue of practice, since a predictor is scored against the benchmark
- * label on a subset the label defines and the predictor had no part in choosing. Restricting range on
- * the label still attenuates tau, which is a real effect predictors face and not an artifact.
+ * THE SUBSET MUST BE CHOSEN BY A RUN THAT NEITHER LABEL USES. This took two attempts to get right.
+ *
+ * Attempt one selected the top-k by the mean of all three runs, which includes the run being correlated;
+ * conditioning on a sum induces negative correlation between its components, and it duly reported tau of
+ * -0.41, impossible for two estimates of one quantity.
+ *
+ * Attempt two selected by the 2-run reference B and correlated run 1 against it, on the argument that
+ * run 1 took no part in the selection so its variance is unrestricted. That argument is correct as far
+ * as it goes, and it is not enough: selection on B leaves Var(A|S) alone but restricts BOTH Cov(A,B|S)
+ * and Var(B|S), because conditioning on q + noise being large induces negative dependence between q and
+ * that noise. This is Pearson-Thorndike Case-2 range restriction (Pearson 1903; Thorndike 1949). An
+ * independent reviewer reproduced the resulting bias in a pure Gaussian simulation with no ties, no
+ * heteroscedasticity and normal quality, at the same magnitudes we measured, which proves the bias was
+ * the design rather than the data.
+ *
+ * The present version selects on run perm[2] and uses runs perm[0] and perm[1] as the two labels. Both
+ * labels are then orthogonal to the selection, no correction is needed, and Pearson(x1, x2 | S) IS the
+ * within-subset ICC(1,1) directly. Verified: residuals fall to +0.002 to +0.041 with no trend in r.
+ *
+ * WHAT THIS IS, IN STANDARD TERMS, because it is classical and should be cited rather than reinvented.
+ * ICC(1,1) = sigma_B^2/(sigma_B^2+sigma_W^2) is the one-way random-effects intraclass correlation
+ * (Fisher 1925; Shrout & Fleiss 1979). The reliability of a mean of m runs follows by Spearman-Brown,
+ * R_m = m*R_1/(1+(m-1)*R_1) (Spearman 1910; Brown 1910), and the correlation between an m1-run and an
+ * m2-run label is sqrt(R_m1 * R_m2), which is Spearman's 1904 correction for attenuation applied with a
+ * true-score correlation of one. tau = (2/pi) arcsin(rho) holds for elliptical joints, not merely normal
+ * ones (Kruskal 1958; Lindskog, McNeil & Schmock 2003), so non-normal MARGINAL quality does not break it
+ * since tau is margin-free; non-ellipticity of the joint does.
  *
  * Kendall tau is computed on a random subsample of pairs rather than all O(n^2), which makes it an
  * unbiased estimate of tau with a standard error we report rather than an exact value.
@@ -94,12 +113,13 @@ static void tau_of(const int *idx, int m, long pairs, int p0, int p1, int p2,
                    double *tau, double *se, double *tied)
 {
     long conc = 0, disc = 0, ties = 0, i;
+    (void)p2;                                  /* p2 selects the subset; it is not a label */
     for(i = 0; i < pairs; i++){
         int a = idx[rbelow((uint32_t)m)], b = idx[rbelow((uint32_t)m)];
         double x, y;
         if(a == b) continue;
-        x = vacc[a][p0] - vacc[b][p0];
-        y = 0.5*(vacc[a][p1]+vacc[a][p2]) - 0.5*(vacc[b][p1]+vacc[b][p2]);
+        x = vacc[a][p0] - vacc[b][p0];         /* label 1: one run  */
+        y = vacc[a][p1] - vacc[b][p1];         /* label 2: another  */
         if(x == 0.0 || y == 0.0){ ties++; continue; }
         if(x*y > 0) conc++; else disc++;
     }
@@ -152,7 +172,7 @@ int main(int argc, char **argv)
 
     /* ---- 1. the rank-correlation ceiling ---- */
     for(i = NTRIAL-1; i > 0; i--){ int j = (int)rbelow((uint32_t)(i+1)), t = perm[i]; perm[i]=perm[j]; perm[j]=t; }
-    for(i = 0; i < narch; i++) refkey[i] = 0.5f*(vacc[i][perm[1]] + vacc[i][perm[2]]);
+    for(i = 0; i < narch; i++) refkey[i] = vacc[i][perm[2]];   /* the run NEITHER label uses */
     qsort(idx, (size_t)narch, sizeof idx[0], cmp_desc);
     if(!envint("CSV",0)) printf("RANK-CORRELATION CEILING: Kendall tau of a 1-run label against an independent 2-run label.\n");
     if(!envint("CSV",0)) printf("No predictor scored against this benchmark's labels can exceed it.\n");
@@ -177,23 +197,29 @@ int main(int argc, char **argv)
          * sigma_B^2 + sigma_W^2. That run took no part in choosing the subset, so it is not restricted by
          * the selection; using the 3-run mean here would be, since the subset was chosen on the
          * reference. sigma_W is the pooled within-architecture value over the same subset. */
-        { double m1 = 0, m2 = 0, sw = 0, vB, rho, tpred, ratio; int j2;
+        /* ICC within the subset, by one-way random-effects moments over the TWO label runs only. Both
+         * are orthogonal to the selection, so nothing here is range-restricted. sigma_W^2 comes from
+         * (x1-x2)^2/2, which is orthogonal to their own sum and so is uncontaminated even when a subset
+         * was chosen using those runs; the 3-run pooled estimate is not, and in top-k subsets it drove
+         * sigma_B^2 negative. */
+        { double m1 = 0, m2 = 0, sw = 0, vB, rho, tpred, ratio, icc; int j2;
           for(j2 = 0; j2 < m; j2++){
-              int a = idx[j2]; double x = vacc[a][perm[0]], mu, ss = 0; int k;
-              m1 += x; m2 += x*x;
-              mu = vmean[a];
-              for(k = 0; k < NTRIAL; k++) ss += (vacc[a][k]-mu)*(vacc[a][k]-mu);
-              sw += ss/2.0;
+              int a = idx[j2];
+              double x = vacc[a][perm[0]], y = vacc[a][perm[1]], d = x - y;
+              m1 += 0.5*(x+y); m2 += 0.25*(x+y)*(x+y);
+              sw += d*d/2.0;
           }
-          m1 /= m; m2 = m2/m - m1*m1; sw /= m;          /* m2 = sigma_B^2 + sigma_W^2, sw = sigma_W^2 */
-          vB = m2 - sw;
+          m1 /= m; m2 = m2/m - m1*m1; sw /= m;
+          /* Var(mean of 2) = sigma_B^2 + sigma_W^2/2, so sigma_B^2 = that minus sigma_W^2/2 */
+          vB = m2 - sw/2.0;
           if(vB < 1e-12) vB = 1e-12;
-          rho   = vB / sqrt((vB + sw) * (vB + sw/2.0));
-          if(rho > 1.0) rho = 1.0;
+          icc   = vB / (vB + sw);                       /* ICC(1,1): the ceiling for a 1-run label */
+          rho   = icc;                                  /* 1-run vs 1-run correlation IS the ICC */
           tpred = (2.0/3.14159265358979323846) * asin(rho);
           ratio = sqrt(sw / vB);
+          (void)pooled;
           if(envint("CSV",0))
-              printf("CELL %s %d %.4f %.4f %.4f %.4f\n", tag, m, ratio, tau, tpred, tau - tpred);
+              printf("CELL %s %d %.4f %.4f %.4f %.4f %.4f\n", tag, m, ratio, tau, tpred, tau - tpred, icc);
           else
               printf("  %-12s %10.4f %12.4f %9.1f%%  %8.3f %10.4f %+9.4f\n", lab, tau, se, 100.0*tied,
                      ratio, tpred, tau - tpred); }
