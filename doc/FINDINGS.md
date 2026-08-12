@@ -128,6 +128,37 @@ of an analyst's choice rather than of the benchmark. Lead with the flip rate, wh
 Also stated: sigma estimated from three runs has 2 degrees of freedom and is itself good to roughly
 plus or minus 60%, so these are percentiles of the estimate rather than of the truth.
 
+## 5. At low training budget, a comparison is a coin flip at any effect size
+
+The full NAS-Bench-101 archive holds three runs at each of 4, 12, 36 and 108 epochs.
+`validation/nb101_budget.c` extracts one budget at a time; the epoch-108 rows reproduce the separate
+epoch-108 archive to four decimals, which cross-checks both extractions, and mean accuracy rises 27.9,
+52.7, 84.2, 90.2 across the budgets as it must.
+
+Flip rates by observed difference, and the whole-set rank-correlation ceiling, per budget:
+
+    epochs   median SD   0.1-0.2   0.2-0.3   0.5-1.0   1.0-2.0   tau ceiling (all)
+      4        4.147      48.9%     51.2%     47.0%     45.1%        0.667
+     12        5.090      49.2%     46.7%     47.3%     43.5%        0.735
+     36        0.804      47.0%     44.5%     30.8%     18.3%        0.819
+    108        0.328      41.6%     36.3%     16.5%      4.4%        0.832
+
+**At 4 and 12 epochs the comparison is a coin flip at every effect size up to two percentage points.** A
+1-to-2-point difference that is reliable at full training, 4.4% backwards, is 45% backwards at 4 epochs.
+The 4-epoch median run-to-run spread is 4.1 pp, twelve times the 108-epoch figure.
+
+**This is the result with the most practical bite**, because multi-fidelity and early-stopping search is
+standard practice and it ranks candidates on exactly these cheap evaluations, on the assumption that a
+low-fidelity ranking transfers. At 4 epochs on this benchmark there is almost no ranking to transfer:
+the whole-set ceiling falls from 0.83 to 0.67, and within any effect size a practitioner would act on,
+the signal is gone.
+
+Two things not to smooth over. The noise is **not monotone** in budget: 12 epochs is noisier than 4
+(5.09 against 4.15), plausibly because 4-epoch accuracy is uniformly poor, mean 27.9%, leaving less room
+to diverge, while 12 epochs is where architectures separate most in training stability. And the 51.2% in
+the 4-epoch 0.2-0.3 bin is above 50%, which should be read as indistinguishable from a coin flip rather
+than as worse than chance.
+
 ---
 
 ## Scope: what this does and does not indict
@@ -140,9 +171,10 @@ the published label.
 
 **Where it does bite:** methods that train architectures themselves and report the result, such as
 DARTS-space claims of the form "we found architecture X and it reaches 97.5%"; predictor and proxy
-evaluation, where the label is noisy and the ceiling is unreported; one-shot and multi-fidelity methods
-that select on a single noisy signal; and the benchmarks' own reported optima together with every regret
-curve measured against them.
+evaluation, where the label is noisy and the ceiling is unreported; the benchmarks' own reported optima
+together with every regret curve measured against them; and, most directly of all, multi-fidelity and
+early-stopping methods, which section 5 shows are ranking on a signal that is a coin flip at 4 and 12
+epochs regardless of effect size.
 
 **And the framing that follows from that** is an instrument rather than a verdict: here is the
 measurement error budget for a procedure you already run, and here is what it costs to halve it.

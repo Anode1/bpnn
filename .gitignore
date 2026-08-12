@@ -75,3 +75,9 @@ validation/nasbench101_trials.txt
 /nb101_signal
 /nb101_search
 /et_n*
+validation/nb101_b*.txt
+validation/nb201_t*.txt
+validation/nb101_triples.txt
+/nb101_budget
+/nb_ceiling
+/nb201_extract
