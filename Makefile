@@ -49,7 +49,7 @@ pedantic:
 # pairstat is the paired-statistics tool: Wilcoxon signed-rank (exact where ties permit),
 # exact sign test, Hodges-Lehmann with distribution-free intervals, paired t, Holm across a
 # declared family, and minimum detectable effect. It self-tests before it is trusted.
-tools: pairstat nb101_trials nb101_signal
+tools: pairstat nb101_trials nb101_signal nb101_flip
 	./pairstat --selftest
 
 pairstat: validation/pairstat.c
@@ -65,4 +65,6 @@ fsdd_frame: validation/fsdd_frame.c $(ENGINE:.o=.c)
 
 clean:
 	rm -f *.o *.d $(PROG) bpnn_ut bpnn_ut_asan bpnn_ut_ubsan \
-	      pairstat nb101_trials nb101_signal conv2d fsdd_frame
+	      pairstat nb101_trials nb101_signal nb101_flip conv2d fsdd_frame
+nb101_flip: validation/nb101_flip.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
