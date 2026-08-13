@@ -40,7 +40,7 @@ typedef struct {
     double ymean, ym2, ysd;          /* Welford state, then the response's own spread */
     double hsd;                      /* spread of the response over the reported rows only */
     Net   *net;
-    double train_rmse, held_rmse, run_sd, best_held;
+    double train_rmse, held_rmse, run_sd, best_held, shipped_held;
     long   nseed, nheld, epochs_ran, nseen;
     double tail;                     /* how far the response reaches past its own quartiles */
     int    flat;                     /* the response never varied in this group */
@@ -78,6 +78,9 @@ void     range_init(Group *g);
 void     range_add(Group *g, const double *x, double y);
 void     range_done(Group *g);
 void     ranges(Group *g);
+/* The ranges of the rows at positions [a, b) of ORD: the scaling of a fit that must not see the
+ * rows it will be reported on. */
+void     ranges_of(Group *g, const long *ord, long a, long b);
 void     scale_in(const Group *g, const double *raw, smb_real *out);
 smb_real scale_out(const Group *g, double t);
 double   unscale_out(const Group *g, double a);

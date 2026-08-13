@@ -127,6 +127,15 @@ void ranges(Group *g)
     range_done(g);
 }
 
+void ranges_of(Group *g, const long *ord, long a, long b)
+{
+    long i;
+    range_init(g);
+    for (i = a; i < b; i++)
+        range_add(g, ROW(g->first + ord[i]), ys[g->first + ord[i]]);
+    range_done(g);
+}
+
 void scale_in(const Group *g, const double *raw, smb_real *out)
 {
     long j;

@@ -23,4 +23,5 @@ cells_corrected.txt
 *.bpnn.txt
 *.linearr.csv
 example/mknonlinear
+example/mkelos
 

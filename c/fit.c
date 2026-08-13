@@ -168,6 +168,10 @@ int fit_group(Group *g)
             long k = (long)(rng_u32(&r) % (uint32_t)(i + 1));
             long t = ord[i]; ord[i] = ord[k]; ord[k] = t;
         }
+        /* Scaled by the rows this refit trains on, never by the rows it will be reported on.
+         * Minimum and maximum are exactly the statistics one held-out row moves, and the range
+         * stored in the model is what the out-of-range check at scoring time compares against. */
+        ranges_of(g, ord, 0, ntr);
         nets[s] = train_one(g, ord, ntr, nstop, (uint32_t)(1u + 104729u * (unsigned)s), &ran[s]);
         if (!nets[s]) goto done;
         held[s] = g->nheld > 0 ? rmse(g, nets[s], ord, nstop, g->n) : rmse(g, nets[s], ord, 0, ntr);
@@ -186,7 +190,12 @@ int fit_group(Group *g)
     for (s = 0; s < nseed; s++) if (held[s] == mid) { med = s; break; }
     g->net = nets[med];
     nets[med] = NULL;
-    g->held_rmse = held[med];
+    /* The reported error is the MEAN over refits, which nothing selected on. held[med] chose
+     * which model ships, so reporting it would report the statistic that did the choosing; the
+     * mean is unbiased for this configuration. The shipped model's own figure goes in the model
+     * file, where the two can be compared. */
+    g->held_rmse = m;
+    g->shipped_held = held[med];
     g->nseed = nseed;
     g->epochs_ran = ran[med];
     refit_group(g, held, ran);
@@ -213,6 +222,8 @@ int fit_group(Group *g)
             long k = (long)(rng_u32(&r) % (uint32_t)(i + 1));
             long t = ord[i]; ord[i] = ord[k]; ord[k] = t;
         }
+        /* The shipped model carries the scaling it was trained with. */
+        ranges_of(g, ord, 0, ntr);
         g->train_rmse = rmse(g, g->net, ord, 0, ntr);
     }
     rc = 0;

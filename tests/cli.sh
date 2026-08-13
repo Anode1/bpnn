@@ -503,10 +503,15 @@ awk -F, 'NR==1{print;next}{printf "%s,%.10g,%s\n",$1,$2+10000000000,$3}' "$tmp/o
 check "an offset of 1e10 does not destroy the variance explained" \
       "$("$bin" -t "$tmp/e10.csv" -e 200 -s 2 2>&1 >/dev/null | grep -c 'barely using its' || true)" "0"
 
-# srt[nseed/2] is the UPPER middle, so at two refits the shipped model was the worse one.
-one=$("$bin" -t "$tmp/ok.csv" -e 200 -s 1 2>&1 >/dev/null | awk '$1=="A"{print $7}')
-two=$("$bin" -t "$tmp/ok.csv" -e 200 -s 2 2>&1 >/dev/null | awk '$1=="A"{print $7}')
-check "two refits ship the better of the two, not the worse" "$two" "$one"
+# srt[nseed/2] is the UPPER middle, so at two refits the shipped model was the worse one. The
+# reported error is now the mean over refits, so this reads the shipped model's own figure from
+# the model file and checks it against the smaller of the two refits.
+"$bin" -t "$tmp/ok.csv" -e 200 -s 2 --per-refit "$tmp/two.refits" > "$tmp/two.model" 2>/dev/null
+shipped=$(grep '^diag ' "$tmp/two.model" | tr ' ' '\n' | sed -n 's/^shipped=//p')
+lower=$(grep '^REFIT ' "$tmp/two.refits" | awk '{print $4}' | sort -g | head -1)
+check "two refits ship the better of the two, not the worse" \
+      "$(awk -v a="$shipped" -v b="$lower" 'BEGIN{d=a-b; if(d<0)d=-d; print (d < 1e-4*b) ? "same" : a" vs "b}')" \
+      "same"
 
 # A response with one extreme value compresses every other row into a sliver of the output
 # band, and the variance explained beside it is measured against that same spread.

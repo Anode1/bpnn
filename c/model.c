@@ -29,9 +29,11 @@ void write_model(void)
         Net *n = g->net;
         if (!n) continue;
         printf("GROUP %s rows=%ld held=%ld\n", g->name, g->n, g->nheld);
-        printf("diag train=%.6g held=%.6g sd=%.6g floor=%.6g best=%.6g expl=%.4f\n",
-               g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd, g->best_held,
-               explained(g));
+        /* held is the mean over refits, which is what the report shows and what nothing
+         * selected on. shipped is this model's own held-out error, which did the selecting. */
+        printf("diag train=%.6g held=%.6g shipped=%.6g sd=%.6g floor=%.6g best=%.6g expl=%.4f\n",
+               g->train_rmse, g->held_rmse, g->shipped_held, g->run_sd, 2.7718 * g->run_sd,
+               g->best_held, explained(g));
         /* 17 significant digits round-trip a double exactly, which the ranges must: they are
          * subtracted from the case at scoring time, so a lost digit here is a lost digit there. */
         printf("target %.17g %.17g\n", g->tlo, g->thi);

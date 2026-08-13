@@ -501,7 +501,8 @@ int fit_stream(const char *path)
         for (s = 0; s < nseed; s++) if (held[s] == mid) { med = s; break; }
         g->net = nets[i * nseed + med];
         nets[i * nseed + med] = NULL;
-        g->held_rmse = held[med];
+        g->held_rmse = m;                  /* the mean; see fit.c */
+        g->shipped_held = held[med];
         g->train_rmse = sqrt(sse_tr[i * nseed + med] / (double)n_tr[i * nseed + med]);
         g->nheld = n_he[i * nseed + med];
         g->nseed = nseed;
