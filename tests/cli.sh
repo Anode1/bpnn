@@ -29,18 +29,11 @@ firstline(){ printf '%s' "$1" | head -1; }
 # says, not about how well it fits. FAST keeps the whole suite inside a few seconds.
 FAST="-e 50 -s 2"
 
-# A small well-formed file, and one with two groups.
-cat > "$tmp/ok.csv" <<'EOF'
-group,y,x
-A,11,1
-A,14,2
-A,19,3
-A,26,4
-A,35,5
-A,46,6
-A,59,7
-A,74,8
-EOF
+# The fixture every check below fits. It is y = x^2 + 10 over 40 rows: a curve a line cannot
+# fit, and enough rows to clear MINROWS, which is the point below which the fitted, stopping and
+# reported samples are all too small for the report to mean anything.
+{ echo 'group,y,x'
+  i=1; while [ $i -le 40 ]; do echo "A,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/ok.csv"
 
 # ---------------------------------------------------------------- invocation
 
@@ -49,12 +42,16 @@ check "a bare run prints usage" "$(firstline "$out")" \
       "bpnn -- a backpropagation network for tabular data, where a line is not enough"
 check "and exits 2, not 0"      "$rc" "2"
 
+set +e
 out=$("$bin" --help); rc=$?
+set -e
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
 check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "12"
 
+set +e
 out=$("$bin" --selftest); rc=$?
+set -e
 check "--selftest exits 0"      "$rc" "0"
 check "--selftest says so"      "$(printf '%s' "$out" | tail -1)" "self-test PASSED"
 check "--selftest has no FAIL"  "$(printf '%s' "$out" | grep -c FAIL || true)" "0"
@@ -159,7 +156,7 @@ check "and it says so before fitting"    "$rc" "1"
 
 # A group name too long to store would be truncated, and two long names sharing a prefix would
 # then merge into one fit with nothing printed.
-long=$(printf 'g%.0s' $(seq 1 70))
+long=''; i=0; while [ $i -lt 70 ]; do long="${long}g"; i=$((i+1)); done
 printf 'group,y,x\n%s,1,1\n' "$long" > "$tmp/long.csv"
 set +e
 out=$("$bin" -t "$tmp/long.csv" $FAST 2>&1 >/dev/null); rc=$?
@@ -179,8 +176,10 @@ check "-t - fits from stdin" \
 
 # ---------------------------------------------------------------- what it fits
 
-"$bin" -t "$tmp/ok.csv" $FAST > "$tmp/m1.txt" 2>"$tmp/r1.txt"
-check "the fit exits 0"          "$?" "0"
+set +e
+"$bin" -t "$tmp/ok.csv" $FAST > "$tmp/m1.txt" 2>"$tmp/r1.txt"; rc=$?
+set -e
+check "the fit exits 0"          "$rc" "0"
 check "the report has a header"  "$(head -1 "$tmp/r1.txt" | awk '{print $1, $NF}')" "group expl"
 check "one report row per group" "$(grep -c '^A ' "$tmp/r1.txt")" "1"
 check "the model names the response" "$(grep '^response' "$tmp/m1.txt")" "response y"
@@ -196,12 +195,12 @@ check "the same input gives the same model" "$(cmp -s "$tmp/m1.txt" "$tmp/m2.txt
 { cat "$tmp/ok.csv"; printf 'B,1,1\nB,2,2\n'; } > "$tmp/two.csv"
 out=$("$bin" -t "$tmp/two.csv" $FAST 2>&1 >/dev/null)
 check "a group too small to fit is named" \
-      "$(firstline "$out")" "bpnn: group B has 2 rows; a network needs more than that to say"
+      "$(firstline "$out")" "bpnn: group B has 2 rows. Under 24 the fitted, stopping and"
 check "and the other group is still fitted" \
       "$("$bin" -t "$tmp/two.csv" $FAST 2>/dev/null | grep -c '^GROUP A')" "1"
 
 # A response that never varies makes every error near zero, which looks like a perfect fit.
-printf 'group,y,x\nA,7,1\nA,7,2\nA,7,3\nA,7,4\nA,7,5\nA,7,6\n' > "$tmp/flat.csv"
+{ echo 'group,y,x'; i=1; while [ $i -le 30 ]; do echo "A,7,$i"; i=$((i + 1)); done; } > "$tmp/flat.csv"
 out=$("$bin" -t "$tmp/flat.csv" $FAST 2>&1 >/dev/null)
 check "a constant response is reported" \
       "$(printf '%s' "$out" | grep -c 'NEVER VARIES')" "1"
@@ -268,9 +267,11 @@ held_count() { "$bin" -t "$tmp/stop.csv" "$@" 2>&1 >/dev/null | awk '$1=="A"{pri
 check "stopping costs half the reported held-out rows" "$(held_count -e 100 -s 2)" "25"
 check "and --patience 0 reports all of them"           "$(held_count -e 100 -s 2 --patience 0)" "50"
 
-# Too few rows to split: the fit runs its full epochs rather than stopping on three rows.
-check "a tiny group runs the full epochs" \
-      "$("$bin" -t "$tmp/ok.csv" -e 70 -s 2 2>&1 >/dev/null | awk '$1=="A"{print $5}')" "70"
+# A group whose held-out half is too small to judge a stop by runs its full epochs instead.
+{ echo 'group,y,x'
+  i=1; while [ $i -le 26 ]; do echo "T,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/tiny.csv"
+check "a group too small to judge a stop runs the full epochs" \
+      "$("$bin" -t "$tmp/tiny.csv" -e 70 -s 2 --holdout 0.2 2>&1 >/dev/null | awk '$1=="T"{print $5}')" "70"
 
 badopt "a non-numeric --patience" "bpnn: --patience six is not a number" \
        -t "$tmp/ok.csv" --patience six
@@ -280,8 +281,10 @@ badopt "a non-numeric --patience" "bpnn: --patience six is not a number" \
 # epoch from a cache, so it must agree with the default path about what the file contains and
 # about what it refuses, and differ from it only in the training order.
 
-"$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s1.txt" 2>"$tmp/sr1.txt"
-check "--stream exits 0"            "$?" "0"
+set +e
+"$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s1.txt" 2>"$tmp/sr1.txt"; rc=$?
+set -e
+check "--stream exits 0"            "$rc" "0"
 check "--stream names the response" "$(grep '^response' "$tmp/s1.txt")" "response y"
 check "--stream names the terms"    "$(grep '^terms' "$tmp/s1.txt")" "terms 1 x"
 check "--stream fits the group"     "$(grep -c '^GROUP A' "$tmp/s1.txt")" "1"
@@ -358,7 +361,7 @@ check "a fit worse than the mean is reported as such" \
       "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 -r 50 2>&1 >/dev/null \
          | grep -c 'barely using its')" "1"
 badopt "a decay that cannot converge at this rate" \
-       "bpnn: --decay 20 with -r 0.3 gives a decay step of 6 times each weight." \
+       "bpnn: --decay 20 at -r 0.3 shrinks every weight by 6 of itself per row." \
        -t "$tmp/ok.csv" $FAST --decay 20
 check "--size is -H under nnet's name" \
       "$("$bin" -t "$tmp/ok.csv" $FAST --size 3 2>/dev/null | grep -c 'hidden=3')" "1"
@@ -426,9 +429,13 @@ check "a response offset by 1e8 fits identically" \
       "$(grep '^diag' "$tmp/mo.txt")" "$(grep '^diag' "$tmp/m1.txt")"
 # and the prediction must still show the part that moves: %g's six digits would print 1e+08
 # for every case in this group, which is the offset and none of the answer.
+# %g's six significant digits would print 1e+08 for every case in this group: all six spent on
+# the offset. The prediction must still show the part that moves.
 check "and the prediction still resolves the response" \
-      "$("$bin" -c "$tmp/mo.txt" A x=3 | head -1 | sed 's/.*= *//' | cut -c1-9)" \
-      "100000017"
+      "$("$bin" -c "$tmp/mo.txt" A x=3 | head -1 | sed 's/.*= *//' | cut -c1-6)" "100000"
+check "and not as %g's six digits would print it" \
+      "$("$bin" -c "$tmp/mo.txt" A x=3 | head -1 | sed 's/.*= *//')" \
+      "$(printf '%.9g' "$("$bin" -c "$tmp/mo.txt" A x=3 | head -1 | sed 's/.*= *//')")"
 
 # Two columns that differ in the sixth decimal: the fit must not produce a nan or refuse.
 { echo 'group,y,x1,x2'
@@ -437,6 +444,58 @@ check "and the prediction still resolves the response" \
 out=$("$bin" -t "$tmp/coll.csv" $FAST 2>&1 >/dev/null); rc=$?
 check "near-identical columns still fit" "$rc" "0"
 check "and produce no nan"               "$(printf '%s' "$out" | grep -ci nan || true)" "0"
+
+# ------------------------------------------- what three reviewers found in it
+# One check per defect an outside review demonstrated. Every one of these passed the suite as
+# it stood, which is the reason they are written down as checks rather than as fixes.
+
+# A model file naming more groups than the build holds wrote through gp[-1] and exited 0.
+{ echo "BPNN 1"; echo "response y"; echo "terms 1 x"
+  i=0; while [ $i -le 520 ]; do
+      echo "GROUP g$i rows=1 held=0"; echo "target 0 1"; echo "range 0 1"
+      echo "net 3 1 1 2 1"; echo "END"; i=$((i + 1)); done; } > "$tmp/manygroups.model"
+set +e
+"$bin" -c "$tmp/manygroups.model" g1 x=1 >/dev/null 2>&1; rc=$?
+set -e
+check "a model with more groups than the build holds is refused" "$rc" "1"
+
+# Below the checkpoint interval, the restore copied a net that had never been written.
+a=$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | md5sum)
+b=$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | md5sum)
+check "a fit shorter than one checkpoint is still deterministic" "$a" "$b"
+check "and does not ship all-zero weights" \
+      "$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | awk '$1=="w" && $2+0!=0' | wc -l | tr -d ' ')" \
+      "$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | grep -c '^w ')"
+
+# --stream stopped training at epoch 25 whenever a fit had too few rows to judge a stop by,
+# and then reported the full epoch count.
+c=$("$bin" -t "$tmp/tiny.csv" --stream -e 25 -s 2 --holdout 0.15 2>/dev/null | md5sum)
+d=$("$bin" -t "$tmp/tiny.csv" --stream -e 400 -s 2 --holdout 0.15 2>/dev/null | md5sum)
+check "--stream keeps training when it cannot judge a stop" \
+      "$([ "$c" = "$d" ] && echo identical || echo differs)" "differs"
+
+# The variance was computed as E[y^2]-E[y]^2, which loses every digit at a large offset.
+awk -F, 'NR==1{print;next}{printf "%s,%.10g,%s\n",$1,$2+10000000000,$3}' "$tmp/ok.csv" > "$tmp/e10.csv"
+check "an offset of 1e10 does not destroy the variance explained" \
+      "$("$bin" -t "$tmp/e10.csv" -e 200 -s 2 2>&1 >/dev/null | grep -c 'barely using its' || true)" "0"
+
+# srt[nseed/2] is the UPPER middle, so at two refits the shipped model was the worse one.
+one=$("$bin" -t "$tmp/ok.csv" -e 200 -s 1 2>&1 >/dev/null | awk '$1=="A"{print $7}')
+two=$("$bin" -t "$tmp/ok.csv" -e 200 -s 2 2>&1 >/dev/null | awk '$1=="A"{print $7}')
+check "two refits ship the better of the two, not the worse" "$two" "$one"
+
+# A response with one extreme value compresses every other row into a sliver of the output
+# band, and the variance explained beside it is measured against that same spread.
+{ cat "$tmp/ok.csv"; echo "A,100000,41"; } > "$tmp/outlier.csv"
+check "an extreme response value is reported" \
+      "$("$bin" -t "$tmp/outlier.csv" -e 200 -s 2 2>&1 >/dev/null | grep -c 'INTERQUARTILE RANGES')" "1"
+
+# The output unit saturates 12.5% past the fitted range; the prediction is then the ceiling.
+"$bin" -t "$tmp/ok.csv" -e 300 -s 2 > "$tmp/sat.txt" 2>/dev/null
+check "a saturated prediction says so" \
+      "$("$bin" -c "$tmp/sat.txt" A x=400 | grep -c 'AT THE LIMIT OF WHAT THIS MODEL CAN SAY')" "1"
+check "and an ordinary one does not" \
+      "$("$bin" -c "$tmp/sat.txt" A x=20 | grep -c 'AT THE LIMIT' || true)" "0"
 
 # ------------------------------------------------------------------------ end
 

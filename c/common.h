@@ -8,7 +8,7 @@
  * construction (Power of Ten rule 3) and the train/infer hot path allocates
  * nothing.
  *
- * Copyright (C) 2001 Vasili Gavrilov. GNU GPL v2 or later.
+ * Copyright (c) 2001-2026 Vasili Gavrilov. BSD 2-Clause; see LICENSE.
  */
 #ifndef SMB_COMMON_H
 #define SMB_COMMON_H

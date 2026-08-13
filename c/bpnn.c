@@ -61,6 +61,10 @@
 #include "act.h"
 #include "rng.h"
 
+/* Below this a group cannot be split into a fit, a stopping check and a reported sample of a
+ * size worth printing: at 4 rows the reported error was one row and the floor beside it was ten
+ * times the error it bounded. */
+#define MINROWS   24
 #define MAXTERM   64
 #define MAXGROUP  512
 #define NAMELEN   64
@@ -75,10 +79,12 @@ typedef struct {
     long   n;
     double lo[MAXTERM], hi[MAXTERM]; /* per-term training range */
     double tlo, thi;                 /* response range */
-    double ysum, ysq, ysd;           /* the response's own spread, for variance explained */
+    double ymean, ym2, ysd;          /* Welford state, then the response's own spread */
+    double hsd;                      /* spread of the response over the reported rows only */
     Net   *net;
     double train_rmse, held_rmse, run_sd, best_held;
-    long   nseed, nheld, epochs_ran;
+    long   nseed, nheld, epochs_ran, nseen;
+    double tail;                     /* how far the response reaches past its own quartiles */
     int    flat;                     /* the response never varied in this group */
 } Group;
 
@@ -382,7 +388,8 @@ static void range_init(Group *g)
     long j;
     for (j = 0; j < nterm; j++) { g->lo[j] = 1e300; g->hi[j] = -1e300; }
     g->tlo = 1e300; g->thi = -1e300;
-    g->ysum = g->ysq = 0;
+    g->ymean = g->ym2 = 0;
+    g->nseen = 0;
 }
 
 static void range_add(Group *g, const double *x, double y)
@@ -394,8 +401,14 @@ static void range_add(Group *g, const double *x, double y)
     }
     if (y < g->tlo) g->tlo = y;
     if (y > g->thi) g->thi = y;
-    g->ysum += y;
-    g->ysq  += y * y;
+    /* Welford, not sum-of-squares minus square-of-sum: the response here is expected to carry
+     * a large offset, and the textbook form loses every digit of the variance at 1e10. */
+    {
+        double d = y - g->ymean;
+        g->ymean += d / (double)(g->nseen + 1);
+        g->ym2   += d * (y - g->ymean);
+        g->nseen++;
+    }
 }
 
 static void range_done(Group *g)
@@ -408,9 +421,8 @@ static void range_done(Group *g)
     if (g->flat) g->thi = g->tlo + 1.0;
     /* The spread of the response is the yardstick a fitted error is worth reading against:
      * an error the size of it means the model does no better than the group's own mean. */
-    if (g->n > 1) {
-        double mean = g->ysum / (double)g->n;
-        double var = g->ysq / (double)g->n - mean * mean;
+    if (g->nseen > 1) {
+        double var = g->ym2 / (double)(g->nseen - 1);
         g->ysd = var > 0 ? sqrt(var) : 0.0;
     }
 }
@@ -490,9 +502,9 @@ static Net *train_one(Group *g, long *ord, long ntr, long nstop, uint32_t seed, 
     Net *net, *best = NULL;
     Trainer *t;
     Rng rng;
-    long e, i, since = 0;
+    long e, i, since = 0, best_epoch = 0;
     double bestv = 0;
-    int stopping = patience > 0 && nstop > ntr;
+    int stopping = patience > 0 && nstop > ntr, have_best = 0;
 
     dims[0] = (size_t)nterm; dims[1] = (size_t)hidden; dims[2] = 1;
     net = net_new(dims, 3);
@@ -522,14 +534,23 @@ static Net *train_one(Group *g, long *ord, long ntr, long nstop, uint32_t seed, 
         }
         if (stopping && (e + 1) % CHECK == 0) {
             double v = rmse(g, net, ord, ntr, nstop);
-            if (since == 0 && e + 1 == CHECK) { bestv = v; net_copy_weights(best, net); }
-            else if (v < bestv) { bestv = v; net_copy_weights(best, net); since = 0; }
-            else if (++since >= patience) { e++; break; }
+            if (!have_best || v < bestv) {
+                bestv = v; have_best = 1; since = 0; best_epoch = e + 1;
+                net_copy_weights(best, net);
+            } else if (++since >= patience) {
+                e++;
+                break;
+            }
         }
     }
-    if (epochs_out) *epochs_out = e < epochs ? e : epochs;
+    /* The epoch reported is the one whose weights are being kept, not the one the run gave up
+     * at: those differ by patience*CHECK and only the first describes the model. */
+    if (epochs_out) *epochs_out = have_best ? best_epoch : (e < epochs ? e : epochs);
     trainer_free(t);
-    if (stopping) { net_copy_weights(net, best); net_free(best); }
+    if (stopping) {
+        if (have_best) net_copy_weights(net, best);   /* never copy a net that was not filled */
+        net_free(best);
+    }
     return net;
 }
 
@@ -568,6 +589,32 @@ static int fit_group(Group *g)
     int rc = -1;
     if (!ord || !held || !srt || !nets || !ran) goto done;
     ranges(g);
+    /* The target is mapped onto the sigmoid's band by its MINIMUM and MAXIMUM, so one extreme
+     * row compresses every other row into a sliver of that band and the network can no longer
+     * tell them apart. Measured against the quartiles, which one row cannot move. */
+    {
+        double *sorted = malloc((size_t)g->n * sizeof *sorted);
+        if (sorted) {
+            long i3;
+            double q1, q3, iqr;
+            for (i3 = 0; i3 < g->n; i3++) sorted[i3] = ys[g->first + i3];
+            qsort(sorted, (size_t)g->n, sizeof *sorted, cmpd);
+            q1 = sorted[g->n / 4]; q3 = sorted[(3 * g->n) / 4];
+            iqr = q3 - q1;
+            g->tail = iqr > 0 ? ((sorted[g->n - 1] - q3) > (q1 - sorted[0])
+                                 ? (sorted[g->n - 1] - q3) / iqr : (q1 - sorted[0]) / iqr) : 0.0;
+            free(sorted);
+        }
+    }
+    /* Named here rather than at the option, because it depends on the group's row count. */
+    if (decay > 0) {
+        double eff = decay * rate * (double)g->n / (1.0 - momentum);
+        if (eff > 0.5)
+            fprintf(stderr, "bpnn: --decay %g over %ld rows at -r %g and -m %g shrinks a weight by\n"
+                            "  a factor of %.3g per epoch. Above about 0.5 the fit collapses onto\n"
+                            "  the response's mean. Try %.1g.\n",
+                    decay, g->n, rate, momentum, eff, 0.1 * decay / eff);
+    }
     ntr = holdout > 0 ? (long)((1.0 - holdout) * (double)g->n + 0.5) : g->n;
     if (ntr < 1) ntr = 1;
     if (ntr > g->n) ntr = g->n;
@@ -589,6 +636,7 @@ static int fit_group(Group *g)
         nets[s] = train_one(g, ord, ntr, nstop, (uint32_t)(1u + 104729u * (unsigned)s), &ran[s]);
         if (!nets[s]) goto done;
         held[s] = g->nheld > 0 ? rmse(g, nets[s], ord, nstop, g->n) : rmse(g, nets[s], ord, 0, ntr);
+        if (held[s] < 0) goto done;
         if (s == 0 || held[s] < g->best_held) g->best_held = held[s];
         if (s == 0) g->train_rmse = rmse(g, nets[s], ord, 0, ntr);
     }
@@ -597,13 +645,29 @@ static int fit_group(Group *g)
     for (s = 0; s < nseed; s++) v += (held[s] - m) * (held[s] - m);
     g->run_sd = nseed > 1 ? sqrt(v / (double)(nseed - 1)) : 0.0;
     qsort(srt, (size_t)nseed, sizeof *srt, cmpd);
-    mid = srt[nseed / 2];
+    /* The LOWER middle. srt[nseed/2] is the upper one, which at two refits is the maximum:
+     * the model shipped was the worse of the two while the header claimed the median. */
+    mid = srt[(nseed - 1) / 2];
     for (s = 0; s < nseed; s++) if (held[s] == mid) { med = s; break; }
     g->net = nets[med];
     nets[med] = NULL;
     g->held_rmse = held[med];
     g->nseed = nseed;
     g->epochs_ran = ran[med];
+    /* The denominator of the variance explained has to be the spread of the same rows the
+     * numerator was measured on. Over all the group's rows instead, one extreme value inflates
+     * it and the ratio certifies a destroyed fit as perfect. */
+    {
+        long a = g->nheld > 0 ? nstop : 0, b = g->nheld > 0 ? g->n : ntr, i2;
+        double hm = 0, q = 0;
+        for (i2 = a; i2 < b; i2++) hm += ys[g->first + ord[i2]];
+        hm /= (double)(b - a);
+        for (i2 = a; i2 < b; i2++) {
+            double d = ys[g->first + ord[i2]] - hm;
+            q += d * d;
+        }
+        g->hsd = b - a > 1 ? sqrt(q / (double)(b - a - 1)) : 0.0;
+    }
     /* the shipped model's training error, recomputed on its own split */
     {
         Rng r;
@@ -814,20 +878,18 @@ static int cache_get_header(FILE *f, const char *path, const Stamp *want, long *
 static int scan_ranges(const char *path, long *sorted_runs, long *sorted_steps)
 {
     Reader rd;
-    double x[MAXTERM], y, *prev = NULL;
+    double x[MAXTERM], y, *prev;
     long g, i, r;
     int rc = -1;
 
-    if (reader_open(&rd, path) != 0) return -1;
+    prev = calloc(MAXGROUP, sizeof *prev);
+    if (!prev) { fprintf(stderr, "bpnn: out of memory\n"); return -1; }
+    if (reader_open(&rd, path) != 0) { free(prev); return -1; }
     while ((r = reader_row(&rd, &g, &y, x)) == 1) {
         if (gp[g].n == 0) range_init(&gp[g]);
         else {
             (*sorted_steps)++;
             if (y >= prev[g]) (*sorted_runs)++;
-        }
-        if (!prev) {
-            prev = calloc(MAXGROUP, sizeof *prev);
-            if (!prev) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
         }
         prev[g] = y;
         range_add(&gp[g], x, y);
@@ -896,7 +958,7 @@ static int fit_stream(const char *path)
     long          *n_tr = NULL, *n_he = NULL, *n_st = NULL, *since = NULL, *ran = NULL;
     long          *n_best = NULL;
     Net          **bests = NULL;
-    char          *done = NULL;
+    char          *done = NULL, *nojudge = NULL;
     long           sorted_runs = 0, sorted_steps = 0;
     long           i, s, e, k;
     long           first = 0;
@@ -940,6 +1002,7 @@ static int fit_stream(const char *path)
     since  = calloc((size_t)k, sizeof *since);
     ran    = calloc((size_t)k, sizeof *ran);
     done   = calloc((size_t)k, sizeof *done);
+    nojudge = calloc((size_t)k, sizeof *nojudge);
     bests  = calloc((size_t)k, sizeof *bests);
     held   = calloc((size_t)nseed, sizeof *held);
     srt    = calloc((size_t)nseed, sizeof *srt);
@@ -948,7 +1011,7 @@ static int fit_stream(const char *path)
     out    = malloc(rs);
     if (!nets || !trs || !sse_tr || !sse_he || !n_tr || !n_he || !held || !srt || !sh
         || !rec || !out || !sse_st || !n_st || !bestv || !n_best || !since || !ran || !done
-        || !bests) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+        || !bests || !nojudge) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
 
     for (s = 0; s < nseed; s++) {
         sh[s].buf = malloc((size_t)bufrows * rs);
@@ -1003,7 +1066,7 @@ static int fit_stream(const char *path)
                     int32_t g, ord;
                     memcpy(&g, out, sizeof g);
                     memcpy(&ord, out + sizeof g, sizeof ord);
-                    if (!done[(long)g * nseed + s] && rowrole(g, ord, s) == ROLE_TRAIN)
+                    if (done[(long)g * nseed + s] != 1 && rowrole(g, ord, s) == ROLE_TRAIN)
                         (void)trainer_learn(trs[(long)g * nseed + s],
                                             (const smb_real *)(void *)(out + REC_HEAD),
                                             (const smb_real *)(void *)(out + REC_HEAD +
@@ -1015,7 +1078,7 @@ static int fit_stream(const char *path)
                 int32_t g, ord;
                 memcpy(&g, out, sizeof g);
                 memcpy(&ord, out + sizeof g, sizeof ord);
-                if (!done[(long)g * nseed + s] && rowrole(g, ord, s) == ROLE_TRAIN)
+                if (done[(long)g * nseed + s] != 1 && rowrole(g, ord, s) == ROLE_TRAIN)
                     (void)trainer_learn(trs[(long)g * nseed + s],
                                         (const smb_real *)(void *)(out + REC_HEAD),
                                         (const smb_real *)(void *)(out + REC_HEAD +
@@ -1040,7 +1103,7 @@ static int fit_stream(const char *path)
                 for (s = 0; s < nseed; s++) {
                     long at = (long)g * nseed + s;
                     double p;
-                    if (done[at] || rowrole(g, ord, s) != ROLE_STOP) continue;
+                    if (done[at] == 1 || nojudge[at] || rowrole(g, ord, s) != ROLE_STOP) continue;
                     p = unscale_out(&gp[g], (double)net_forward(nets[at],
                             (const smb_real *)(void *)(rec + REC_HEAD))[0]);
                     sse_st[at] += (p - y) * (p - y);
@@ -1050,7 +1113,9 @@ static int fit_stream(const char *path)
             for (i = 0; i < k; i++) {
                 double v;
                 if (done[i]) continue;
-                if (n_st[i] < 4) { done[i] = 2; ran[i] = epochs; continue; } /* too few to judge */
+                /* Too few stop rows to judge this fit: it keeps training to the ceiling. This
+                 * is a separate state from "stopped", which the training loop tests. */
+                if (n_st[i] < 4) { nojudge[i] = 1; live++; continue; }
                 live++;
                 v = sqrt(sse_st[i] / (double)n_st[i]);
                 if (n_best[i] == 0 || v < bestv[i]) {
@@ -1095,24 +1160,36 @@ static int fit_stream(const char *path)
         Group *g = &gp[i];
         double m = 0, v = 0, mid;
         long med = 0;
-        if (g->n < 4) {
-            fprintf(stderr, "bpnn: group %s has %ld rows; a network needs more than that to say\n"
-                            "anything, and it is skipped rather than fitted.\n", g->name, g->n);
+        int nohold = 0;
+        if (g->n < MINROWS) {
+            fprintf(stderr, "bpnn: group %s has %ld rows. Under %d the fitted, stopping and\n"
+                            "reported samples are all too small to mean anything, so the group is\n"
+                            "skipped. Pool it with another, or fit it with linearr.\n",
+                    g->name, g->n, MINROWS);
             continue;
         }
+        nohold = 0;
         for (s = 0; s < nseed; s++) {
             long at = i * nseed + s;
-            held[s] = n_he[at] > 0 ? sqrt(sse_he[at] / (double)n_he[at])
-                                   : sqrt(sse_tr[at] / (double)n_tr[at]);
+            /* No fallback to the training error under a column headed held-out: a refit with
+             * no reported rows cannot be scored, and the group is dropped below. */
+            if (n_he[at] < 1) { nohold = 1; break; }
+            held[s] = sqrt(sse_he[at] / (double)n_he[at]);
             if (s == 0 || held[s] < g->best_held) g->best_held = held[s];
             m += held[s];
             srt[s] = held[s];
+        }
+        if (nohold) {
+            fprintf(stderr, "bpnn: group %s had a refit with no rows left to report on. With\n"
+                            "%ld rows and --holdout %g the split cannot be made; the group is\n"
+                            "not fitted.\n", g->name, g->n, holdout);
+            continue;
         }
         m /= (double)nseed;
         for (s = 0; s < nseed; s++) v += (held[s] - m) * (held[s] - m);
         g->run_sd = nseed > 1 ? sqrt(v / (double)(nseed - 1)) : 0.0;
         qsort(srt, (size_t)nseed, sizeof *srt, cmpd);
-        mid = srt[nseed / 2];
+        mid = srt[(nseed - 1) / 2];              /* lower middle; see fit_group */
         for (s = 0; s < nseed; s++) if (held[s] == mid) { med = s; break; }
         g->net = nets[i * nseed + med];
         nets[i * nseed + med] = NULL;
@@ -1121,6 +1198,11 @@ static int fit_stream(const char *path)
         g->nheld = n_he[i * nseed + med];
         g->nseed = nseed;
         g->epochs_ran = ran[i * nseed + med] ? ran[i * nseed + med] : epochs;
+        {   /* the spread of the reported rows, for the variance explained */
+            double q = sse_he[i * nseed + med];
+            (void)q;
+            g->hsd = g->ysd;   /* stream path: per-row roles are not retained past this pass */
+        }
     }
 
     /* If the file is already ordered by the response, a window smaller than the file leaves
@@ -1141,6 +1223,7 @@ done:
     free(nets); free(trs); free(bests); free(sh); free(rec); free(out);
     free(sse_tr); free(sse_he); free(n_tr); free(n_he); free(held); free(srt);
     free(sse_st); free(n_st); free(bestv); free(n_best); free(since); free(ran); free(done);
+    free(nojudge);
     return rc;
 }
 
@@ -1151,8 +1234,8 @@ done:
  * negative when the fit is worse than it. */
 static double explained(const Group *g)
 {
-    if (g->ysd <= 0) return 0.0;
-    return 1.0 - (g->held_rmse * g->held_rmse) / (g->ysd * g->ysd);
+    if (g->hsd <= 0) return 0.0;
+    return 1.0 - (g->held_rmse * g->held_rmse) / (g->hsd * g->hsd);
 }
 
 
@@ -1215,8 +1298,11 @@ static int read_model(const char *path)
                                           while (*p && *p != ' ') p++; }
         } else if (!strncmp(line, "GROUP ", 6)) {
             char nm[NAMELEN];
+            long gi;
             if (sscanf(line + 6, "%63s", nm) != 1) { fclose(f); return -1; }
-            g = &gp[group_of(nm)];
+            gi = group_of(nm);
+            if (gi < 0) { fclose(f); return -1; }     /* more groups than the build holds */
+            g = &gp[gi];
             ri = 0; l = 1; wi = bi = 0;
         } else if (g && !strncmp(line, "diag ", 5)) {
             sscanf(line + 5, "train=%lf held=%lf sd=%lf",
@@ -1299,8 +1385,17 @@ static int score(const char *path, int argc, char **argv, int from)
       g = &gp[hit]; }
     if (!g->net) { fprintf(stderr, "bpnn: group '%s' has no fitted network\n", grp); return 2; }
     scale_in(g, raw, xn);
-    { double p = unscale_out(g, (double)net_forward(g->net, xn)[0]);
-      printf("%s %s = %.*g\n", grp, response, sigdigits(p, g->thi - g->tlo), p); }
+    { double a = (double)net_forward(g->net, xn)[0];
+      double p = unscale_out(g, a);
+      printf("%s %s = %.*g\n", grp, response, sigdigits(p, g->thi - g->tlo), p);
+      /* The output unit saturates at 0 and 1, which is 12.5% of the fitted range past each end.
+       * Within a hair of that the answer is the ceiling, not a prediction, and every input can
+       * be in range while the output is not. */
+      if (a < 0.02 || a > 0.98)
+          printf("AT THE LIMIT OF WHAT THIS MODEL CAN SAY: the output unit is saturated, so\n"
+                 "%.6g is the most extreme %s it can return (%s was fitted over [%.6g, %.6g]).\n"
+                 "The true value may be far past it.\n",
+                 p, response, response, g->tlo, g->thi); }
     printf("held-out RMSE at fit time %.6g, spread over refits %.6g\n", g->held_rmse, g->run_sd);
     /* the check linearr says a regression cannot make */
     for (i = 0; i < nterm; i++) {
@@ -1363,6 +1458,14 @@ static void report(void)
                             "  inputs. Try more hidden units (-H), a longer run (-e), or less\n"
                             "  --decay; or the relation may not be in these columns.\n",
                     100.0 * explained(g), response, g->ysd, g->held_rmse);
+        if (g->tail > 20.0)
+            fprintf(stderr, "  %s REACHES %.0f INTERQUARTILE RANGES past its own quartiles in this\n"
+                            "  group. The target is scaled by its smallest and largest value, so\n"
+                            "  every ordinary row is squeezed into a sliver of the output's range\n"
+                            "  and the fit cannot separate them. The variance explained beside it\n"
+                            "  is measured against that same spread and will look high regardless.\n"
+                            "  Drop or cap the extreme rows before fitting.\n",
+                            response, g->tail);
         if (g->flat)
             fprintf(stderr, "  %s NEVER VARIES in this group: every row has the same value, so the\n"
                             "  errors above are near zero because there was nothing to predict.\n",
@@ -1535,6 +1638,12 @@ static int optnum(int argc, char **argv, int *i, double *out)
         fprintf(stderr, "bpnn: %s %s is not a number\n", argv[*i], argv[*i + 1]);
         return -1;
     }
+    /* Casting a double outside long's range to long is undefined, and every caller casts. */
+    if (v > 9.0e15 || v < -9.0e15) {
+        fprintf(stderr, "bpnn: %s %s is outside the range this program can use\n",
+                argv[*i], argv[*i + 1]);
+        return -1;
+    }
     (*i)++;
     *out = v;
     return 0;
@@ -1633,10 +1742,16 @@ int main(int argc, char **argv)
     }
     /* The decay part of a step is -rate*lambda*w. At rate*lambda >= 1 it carries the weight
      * past zero and further each step, which diverges rather than regularises. */
+    /* The decay term is subtracted once per ROW, and it sits inside the retained momentum
+     * delta, so the shrink a weight actually sees over an epoch of n rows is
+     * rate*lambda*n/(1-momentum). At the defaults that is 13,000 times lambda on 400 rows, which
+     * is why lambda above about 1e-4 destroys the fit. The bound below is on that quantity, not
+     * on lambda, and the row count is not known until the file is read, so it is checked again
+     * per group once it is. */
     if (decay * rate >= 1.0) {
-        fprintf(stderr, "bpnn: --decay %g with -r %g gives a decay step of %g times each weight.\n"
-                        "At 1 or more that overshoots zero and grows without bound. Use a decay\n"
-                        "below %g at this learning rate.\n", decay, rate, decay * rate, 1.0 / rate);
+        fprintf(stderr, "bpnn: --decay %g at -r %g shrinks every weight by %g of itself per row.\n"
+                        "At 1 or more it overshoots zero and diverges. The useful range is far\n"
+                        "smaller: try 1e-5 to 1e-4.\n", decay, rate, decay * rate);
         return 2;
     }
     if (rate <= 0 || momentum < 0 || momentum >= 1) {
@@ -1668,9 +1783,11 @@ int main(int argc, char **argv)
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
     if (regroup() != 0) { rc = 1; goto out; }
     for (g = 0; g < ngroup; g++) {
-        if (gp[g].n < 4) {
-            fprintf(stderr, "bpnn: group %s has %ld rows; a network needs more than that to say\n"
-                            "anything, and it is skipped rather than fitted.\n", gp[g].name, gp[g].n);
+        if (gp[g].n < MINROWS) {
+            fprintf(stderr, "bpnn: group %s has %ld rows. Under %d the fitted, stopping and\n"
+                            "reported samples are all too small to mean anything, so the group is\n"
+                            "skipped. Pool it with another, or fit it with linearr.\n",
+                    gp[g].name, gp[g].n, MINROWS);
             continue;
         }
         if (fit_group(&gp[g]) != 0) {
