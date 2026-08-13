@@ -169,6 +169,25 @@ Three it cannot see, and does not claim to: a term that should have been in the 
 that are not independent of each other, and a response whose relation to the inputs changed after the
 training rows were collected.
 
+## What it refuses to read
+
+A network has no notion of a term it cannot identify, so nothing downstream will notice a bad value:
+an empty field read as a zero, or a single `nan`, reaches every weight in the group and every number
+the model then prints. Each of these is refused at the door, naming the line and the column:
+
+    $ awk 'NR==118{sub(/,[^,]*$/,",nan")}1' example/nonlinear.csv > rows.csv
+    $ ./bpnn -t rows.csv
+    bpnn: the term 'age' is 'nan' on line 118. A nan or an infinity reaches every
+    weight in the group and every number the model then prints.
+    $ echo $?
+    1
+
+Also refused: a row whose field count disagrees with the header, an empty field, a header naming the
+same term twice, a group code too long to store whole (two such codes would otherwise merge into one
+fit silently), an unknown option, an option missing its value, and a case that leaves a term unnamed,
+since scoring it as zero would answer a different question from the one asked. `tests/cli.sh` holds
+one check per refusal, because none of them is reachable from the unit suite.
+
 ## When a network is worth it, and when a line with one more column is worth more
 
 `bench/compare.sh` puts both programs on four files whose true relation is written down, so the best
@@ -209,14 +228,18 @@ something interacts. The linear cases in the table above are linearr's own examp
 ## Build and test
 
     make            build ./bpnn and ./bpnn_worker
-    make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f -- the commit gate
-    make ut-asan    the same under AddressSanitizer
-    make ut-ubsan   the same under UndefinedBehaviorSanitizer
+    make check      ut + cliut: what must pass before a commit
+    make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
+    make cliut      91 black-box checks: the built binary, through a shell
+    make ut-asan    both suites under AddressSanitizer
+    make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean
     make tools      the measurement tools; runs the two self-tests
     make clean
 
-A warning is a defect. `make ut` gates every commit and both sanitizers run before one. `./bpnn
+A warning is a defect. `make check` gates every commit and both sanitizers run before one; the
+sanitizer targets build the binary as well as the suite, because the CSV reader is the part that
+meets input somebody else wrote and `make ut` never reaches it. `./bpnn
 --selftest` is the smaller check the binary carries itself: input scaling at both ends, the target
 round-trip, the resolution coefficient, and a parabola fitted to a known error.
 

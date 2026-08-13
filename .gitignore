@@ -6,6 +6,8 @@ c/*.d
 /bpnn_ut
 /bpnn_ut_asan
 /bpnn_ut_ubsan
+/bpnn_asan
+/bpnn_ubsan
 
 # the measurement tools, one binary per validation/*.c
 /resolve

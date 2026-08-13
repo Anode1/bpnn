@@ -9,7 +9,7 @@
 # SMBPANN itself is untouched and remains the reference implementation for the paper
 # that cites it.
 #
-#   make | ut | ut-asan | ut-ubsan | pedantic | tools | clean
+#   make | check | ut | cliut | ut-asan | ut-ubsan | pedantic | tools | clean
 SHELL = /bin/sh
 
 CC      = cc
@@ -25,9 +25,12 @@ SRC     = $(ENGINE:.o=.c)
 PROG    = bpnn
 WORKER  = bpnn_worker
 
-.PHONY: all ut ut-asan ut-ubsan pedantic tools clean
+.PHONY: all check ut cliut ut-asan ut-ubsan pedantic tools clean
 
 all: $(PROG) $(WORKER)
+
+# What must pass before a commit.
+check: ut cliut
 
 # bpnn: the tabular predictor. Reads linearr's CSV, fits one network per group, writes a
 # model, scores a case against it. This is the program the README is about.
@@ -51,12 +54,23 @@ ut: bpnn_ut
 bpnn_ut: tests/tests.c $(SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DUNIT_TEST -o $@ $^ $(LDLIBS)
 
+# Black-box: the built binary through a shell. `make ut` links the engine and calls functions,
+# so it never sees an exit code, a usage text or a refusal message; those live here.
+cliut: $(PROG)
+	sh tests/cli.sh
+
+# The suite AND the binary, because the CSV reader is only reached through the binary and it is
+# the part that touches attacker-shaped input.
 ut-asan:
 	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=address,undefined -DUNIT_TEST \
 	  -o bpnn_ut_asan tests/tests.c $(SRC) $(LDLIBS) && ./bpnn_ut_asan
+	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=address,undefined \
+	  -o bpnn_asan c/bpnn.c $(SRC) $(LDLIBS) && BPNN=$(PWD)/bpnn_asan sh tests/cli.sh
 ut-ubsan:
 	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=undefined -DUNIT_TEST \
 	  -o bpnn_ut_ubsan tests/tests.c $(SRC) $(LDLIBS) && ./bpnn_ut_ubsan
+	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=undefined \
+	  -o bpnn_ubsan c/bpnn.c $(SRC) $(LDLIBS) && BPNN=$(PWD)/bpnn_ubsan sh tests/cli.sh
 
 pedantic:
 	$(CC) $(CPPFLAGS) $(STD) -pedantic $(WARN) -Wextra -Wshadow -Wconversion -O2 \
@@ -82,4 +96,4 @@ validation/nb101_triples.txt: validation/nasbench101_trials.txt
 
 clean:
 	rm -f c/*.o c/*.d $(PROG) $(WORKER) $(TOOLS) \
-	      bpnn_ut bpnn_ut_asan bpnn_ut_ubsan
+	      bpnn_ut bpnn_ut_asan bpnn_ut_ubsan bpnn_asan bpnn_ubsan

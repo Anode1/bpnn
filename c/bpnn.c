@@ -81,6 +81,7 @@ typedef struct {
     Net   *net;
     double train_rmse, held_rmse, run_sd, best_held;
     long   nseed, nheld;
+    int    flat;                     /* the response never varied in this group */
 } Group;
 
 static Group  gp[MAXGROUP];
@@ -144,47 +145,133 @@ static int grow(long want)
     return 0;
 }
 
+/* A field that must be a finite number. WHAT names it for the message, LINE locates it.
+ *
+ * Every refusal here is a value that would otherwise have reached a weight. An empty field
+ * read as zero, a nan multiplied through the layers, or a row dropped without a word all end
+ * the same way: a model that trained, printed a number, and exited 0. That is the failure this
+ * program is least able to detect afterwards, so it is refused at the door. */
+static int number(const char *s, const char *what, long line, double *out)
+{
+    char *end;
+    double v;
+
+    if (*s == '\0') {
+        fprintf(stderr, "bpnn: %s is empty on line %ld. An empty field is not a zero, and\n"
+                        "choosing what to put there is a modelling decision, not a parse.\n",
+                what, line);
+        return -1;
+    }
+    v = strtod(s, &end);
+    while (*end == ' ' || *end == '\t') end++;
+    if (end == s || *end != '\0') {
+        fprintf(stderr, "bpnn: %s is '%s' on line %ld, which is not a number.\n", what, s, line);
+        return -1;
+    }
+    if (!isfinite(v)) {
+        fprintf(stderr, "bpnn: %s is '%s' on line %ld. A nan or an infinity reaches every\n"
+                        "weight in the group and every number the model then prints.\n",
+                what, s, line);
+        return -1;
+    }
+    *out = v;
+    return 0;
+}
+
+/* A name from the header or the group column: non-empty and short enough to be stored whole.
+ * A truncated group name is the dangerous one, because two distinct groups then merge into one
+ * fit without anything being printed. */
+static int checkname(const char *s, const char *what, long line)
+{
+    if (*s == '\0') {
+        fprintf(stderr, "bpnn: %s is empty on line %ld.\n", what, line);
+        return -1;
+    }
+    if (strlen(s) >= NAMELEN) {
+        fprintf(stderr, "bpnn: %s on line %ld is longer than %d characters: '%s'.\n",
+                what, line, NAMELEN - 1, s);
+        return -1;
+    }
+    return 0;
+}
+
 /* Read PATH: header names the response (column 2) and the terms (3 onward). */
 static int read_csv(const char *path)
 {
     FILE *f = strcmp(path, "-") ? fopen(path, "r") : stdin;
     char line[LINELEN], *fld[MAXTERM + 8];
+    char what[NAMELEN + 32];
+    long lineno = 0;
     int nf, i, header = 0;
     if (!f) { fprintf(stderr, "bpnn: cannot open %s\n", path); return -1; }
     while (fgets(line, sizeof line, f)) {
-        if (line[0] == '#' || line[0] == '\n') continue;
+        lineno++;
+        /* fgets splits an over-long line in two, and the tail would then be read as a row of
+         * its own. Refuse it rather than fit half a row. */
+        if (strchr(line, '\n') == NULL && !feof(f)) {
+            fprintf(stderr, "bpnn: line %ld is longer than %d characters.\n", lineno, LINELEN - 1);
+            goto bad;
+        }
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
         nf = split_csv(line, fld, MAXTERM + 8);
         if (!header) {
-            if (nf < 3) { fprintf(stderr, "bpnn: header needs group, response and at least one term\n"); goto bad; }
-            strncpy(response, fld[1], NAMELEN - 1);
+            if (nf < 3) {
+                fprintf(stderr, "bpnn: the header on line %ld needs a group column, the value\n"
+                                "being predicted, and at least one term.\n", lineno);
+                goto bad;
+            }
             nterm = nf - 2;
-            if (nterm > MAXTERM) { fprintf(stderr, "bpnn: more than %d terms\n", MAXTERM); goto bad; }
-            for (i = 0; i < nterm; i++) strncpy(term[i], fld[i + 2], NAMELEN - 1);
+            if (nterm > MAXTERM) {
+                fprintf(stderr, "bpnn: %ld terms on line %ld; this build holds %d.\n",
+                        nterm, lineno, MAXTERM);
+                goto bad;
+            }
+            if (checkname(fld[1], "the name of the value being predicted", lineno) != 0) goto bad;
+            strncpy(response, fld[1], NAMELEN - 1);
+            for (i = 0; i < nterm; i++) {
+                int j;
+                if (checkname(fld[i + 2], "a term name", lineno) != 0) goto bad;
+                for (j = 0; j < i; j++)
+                    if (!strcmp(term[j], fld[i + 2])) {
+                        fprintf(stderr, "bpnn: the header names the term '%s' twice, so a case\n"
+                                        "naming it could mean either column.\n", fld[i + 2]);
+                        goto bad;
+                    }
+                strncpy(term[i], fld[i + 2], NAMELEN - 1);
+            }
             header = 1;
             continue;
         }
-        if (nf < nterm + 2) continue;
+        if (nf != nterm + 2) {
+            fprintf(stderr, "bpnn: line %ld has %d field%s; the header declared %ld (the group,\n"
+                            "%s, and %ld term%s).\n", lineno, nf, nf == 1 ? "" : "s",
+                    nterm + 2, response, nterm, nterm == 1 ? "" : "s");
+            goto bad;
+        }
         {
-            long g = group_of(fld[0]), j;
-            char *end;
+            long g, j;
             double v;
-            if (g < 0) { fprintf(stderr, "bpnn: more than %d groups\n", MAXGROUP); goto bad; }
+            if (checkname(fld[0], "the group", lineno) != 0) goto bad;
+            g = group_of(fld[0]);
+            if (g < 0) { fprintf(stderr, "bpnn: more than %d groups.\n", MAXGROUP); goto bad; }
             if (grow(nrow + 1) != 0) { fprintf(stderr, "bpnn: out of memory\n"); goto bad; }
-            v = strtod(fld[1], &end);
-            if (end == fld[1]) continue;                 /* missing response: skip the row */
+            snprintf(what, sizeof what, "'%s', the value being predicted,", response);
+            if (number(fld[1], what, lineno, &v) != 0) goto bad;
             ys[nrow] = v;
             for (j = 0; j < nterm; j++) {
-                double u = strtod(fld[j + 2], &end);
-                if (end == fld[j + 2]) u = 0.0;          /* a gap reads as zero, as in linearr */
-                xs[nrow * MAXTERM + j] = u;
+                snprintf(what, sizeof what, "the term '%s'", term[j]);
+                if (number(fld[j + 2], what, lineno, &v) != 0) goto bad;
+                xs[nrow * MAXTERM + j] = v;
             }
             rowgrp[nrow] = g;
             gp[g].n++;
             nrow++;
         }
     }
+    if (ferror(f)) { fprintf(stderr, "bpnn: error reading %s\n", path); goto bad; }
     if (f != stdin) fclose(f);
-    return header ? 0 : -1;
+    if (!header) { fprintf(stderr, "bpnn: %s has no header line.\n", path); return -1; }
+    return 0;
 bad:
     if (f != stdin) fclose(f);
     return -1;
@@ -225,7 +312,10 @@ static void ranges(Group *g)
         if (ys[i] > g->thi) g->thi = ys[i];
     }
     for (j = 0; j < nterm; j++) if (g->hi[j] <= g->lo[j]) g->hi[j] = g->lo[j] + 1.0; /* constant term */
-    if (g->thi <= g->tlo) g->thi = g->tlo + 1.0;
+    /* A response that never varied would divide by zero here. Widening the range keeps the
+     * arithmetic finite and makes the fit look perfect, so the fact is recorded and reported. */
+    g->flat = g->thi <= g->tlo;
+    if (g->flat) g->thi = g->tlo + 1.0;
 }
 
 static void scale_in(const Group *g, const double *raw, smb_real *out)
@@ -243,6 +333,19 @@ static smb_real scale_out(const Group *g, double t)
 static double unscale_out(const Group *g, double a)
 {
     return g->tlo + (a - TLO) / (THI - TLO) * (g->thi - g->tlo);
+}
+
+/* Significant digits enough to show a prediction moving across the range it was fitted on.
+ * A response near 1e8 varying over 60 printed at %g's default six digits is 1e+08 every time:
+ * the model's whole answer falls off the end of the number. */
+static int sigdigits(double v, double span)
+{
+    int d = 6;
+    if (span > 0 && fabs(v) > span)
+        d = (int)floor(log10(fabs(v) / span)) + 5;
+    if (d < 6)  d = 6;
+    if (d > 15) d = 15;
+    return d;
 }
 
 /* --------------------------------------------------------------------- fit  */
@@ -387,8 +490,10 @@ static void write_model(void)
         printf("GROUP %s rows=%ld held=%ld\n", g->name, g->n, g->nheld);
         printf("diag train=%.6g held=%.6g sd=%.6g floor=%.6g best=%.6g\n",
                g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd, g->best_held);
-        printf("target %.9g %.9g\n", g->tlo, g->thi);
-        for (j = 0; j < nterm; j++) printf("range %.9g %.9g\n", g->lo[j], g->hi[j]);
+        /* 17 significant digits round-trip a double exactly, which the ranges must: they are
+         * subtracted from the case at scoring time, so a lost digit here is a lost digit there. */
+        printf("target %.17g %.17g\n", g->tlo, g->thi);
+        for (j = 0; j < nterm; j++) printf("range %.17g %.17g\n", g->lo[j], g->hi[j]);
         printf("net %zu %d", n->nlayers, n->activation);
         for (l = 0; l < n->nlayers; l++) printf(" %zu", n->dim[l]);
         printf("\n");
@@ -474,18 +579,39 @@ static int score(const char *path, int argc, char **argv, int from)
         if (!eq) { grp = argv[i]; continue; }
         *eq = '\0';
         { long j, hit = -1;
+          char *end;
+          double v;
           for (j = 0; j < nterm; j++) if (!strcmp(term[j], argv[i])) hit = j;
           if (hit < 0) { fprintf(stderr, "bpnn: '%s' is not a term in this model\n", argv[i]); return 2; }
-          raw[hit] = atof(eq + 1); given[hit] = 1; }
+          v = strtod(eq + 1, &end);
+          if (end == eq + 1 || *end != '\0' || !isfinite(v)) {
+              fprintf(stderr, "bpnn: %s=%s is not a finite number\n", argv[i], eq + 1);
+              return 2;
+          }
+          raw[hit] = v; given[hit] = 1; }
     }
     if (!grp) { fprintf(stderr, "bpnn: name the group to score, e.g. ./bpnn -c %s A x=3\n", path); return 2; }
+    /* An unnamed term would be scored as zero, which is a value the caller never supplied and
+     * usually not one the group was trained near. Refuse rather than answer a different case. */
+    { long j, missing = 0;
+      for (j = 0; j < nterm; j++) if (!given[j]) missing++;
+      if (missing) {
+          fprintf(stderr, "bpnn: this model has %ld term%s and %ld %s not given:",
+                  nterm, nterm == 1 ? "" : "s", missing,
+                  missing == 1 ? "was" : "were");
+          for (j = 0; j < nterm; j++) if (!given[j]) fprintf(stderr, " %s", term[j]);
+          fprintf(stderr, "\nA missing term would be scored as zero, which is a different case\n"
+                          "from the one you asked about.\n");
+          return 2;
+      } }
     { long j, hit = -1;
       for (j = 0; j < ngroup; j++) if (!strcmp(gp[j].name, grp)) hit = j;
       if (hit < 0) { fprintf(stderr, "bpnn: group '%s' is not in this model\n", grp); return 2; }
       g = &gp[hit]; }
     if (!g->net) { fprintf(stderr, "bpnn: group '%s' has no fitted network\n", grp); return 2; }
     scale_in(g, raw, xn);
-    printf("%s %s = %.6g\n", grp, response, unscale_out(g, (double)net_forward(g->net, xn)[0]));
+    { double p = unscale_out(g, (double)net_forward(g->net, xn)[0]);
+      printf("%s %s = %.*g\n", grp, response, sigdigits(p, g->thi - g->tlo), p); }
     printf("held-out RMSE at fit time %.6g, spread over refits %.6g\n", g->held_rmse, g->run_sd);
     /* the check linearr says a regression cannot make */
     for (i = 0; i < nterm; i++) {
@@ -529,6 +655,10 @@ static void report(void)
                             "  parameters than examples, so some of what it learned is the rows\n"
                             "  themselves. Reduce -H, or use linearr if the relation may be linear.\n",
                             nw, ntr);
+        if (g->flat)
+            fprintf(stderr, "  %s NEVER VARIES in this group: every row has the same value, so the\n"
+                            "  errors above are near zero because there was nothing to predict.\n",
+                            response);
         if (g->nheld == 0)
             fprintf(stderr, "  NO HELD-OUT ROWS (--holdout 0): the 'held-out' column above is the\n"
                             "  training error and does not measure generalization at all.\n");
@@ -616,6 +746,36 @@ static void usage(void)
     printf("              it and makes the reported error meaningless as generalization)\n");
 }
 
+/* An option's argument. Junk is refused rather than read as zero: `-H six` used to mean six
+ * hidden units to the caller and none to atol. */
+static int optnum(int argc, char **argv, int *i, double *out)
+{
+    char *end;
+    double v;
+    if (*i + 1 >= argc) {
+        fprintf(stderr, "bpnn: %s needs a value after it\n", argv[*i]);
+        return -1;
+    }
+    v = strtod(argv[*i + 1], &end);
+    if (end == argv[*i + 1] || *end != '\0' || !isfinite(v)) {
+        fprintf(stderr, "bpnn: %s %s is not a number\n", argv[*i], argv[*i + 1]);
+        return -1;
+    }
+    (*i)++;
+    *out = v;
+    return 0;
+}
+
+static int optstr(int argc, char **argv, int *i, const char **out)
+{
+    if (*i + 1 >= argc) {
+        fprintf(stderr, "bpnn: %s needs a value after it\n", argv[*i]);
+        return -1;
+    }
+    *out = argv[++(*i)];
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int i, mode = 0, first = 0;
@@ -624,31 +784,67 @@ int main(int argc, char **argv)
     int rc = 0;
 
     for (i = 1; i < argc; i++) {
+        double v;
+        const char *s;
         if (!strcmp(argv[i], "--selftest")) return selftest();
-        else if (!strcmp(argv[i], "-t") && i + 1 < argc) { mode = 1; path = argv[++i]; }
-        else if (!strcmp(argv[i], "-c") && i + 1 < argc) { mode = 2; path = argv[++i]; first = i + 1; }
-        else if (!strcmp(argv[i], "-H") && i + 1 < argc) hidden = atol(argv[++i]);
-        else if (!strcmp(argv[i], "-e") && i + 1 < argc) epochs = atol(argv[++i]);
-        else if (!strcmp(argv[i], "-s") && i + 1 < argc) nseed = atol(argv[++i]);
-        else if (!strcmp(argv[i], "-r") && i + 1 < argc) rate = atof(argv[++i]);
-        else if (!strcmp(argv[i], "-m") && i + 1 < argc) momentum = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--holdout") && i + 1 < argc) holdout = atof(argv[++i]);
-        else if (!strcmp(argv[i], "-a") && i + 1 < argc) {
-            const char *a = argv[++i];
-            activation = !strcmp(a, "sigmoid") ? ACT_SIGMOID :
-                         !strcmp(a, "relu")    ? ACT_RELU    : ACT_TANH;
-        }
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(); return 0; }
+        else if (!strcmp(argv[i], "-t")) {
+            if (optstr(argc, argv, &i, &path) != 0) return 2;
+            mode = 1;
+        } else if (!strcmp(argv[i], "-c")) {
+            if (optstr(argc, argv, &i, &path) != 0) return 2;
+            mode = 2; first = i + 1;
+            break;                     /* everything after the model file is the case */
+        } else if (!strcmp(argv[i], "-H")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            hidden = (long)v;
+        } else if (!strcmp(argv[i], "-e")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            epochs = (long)v;
+        } else if (!strcmp(argv[i], "-s")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            nseed = (long)v;
+        } else if (!strcmp(argv[i], "-r")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            rate = v;
+        } else if (!strcmp(argv[i], "-m")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            momentum = v;
+        } else if (!strcmp(argv[i], "--holdout")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            holdout = v;
+        } else if (!strcmp(argv[i], "-a")) {
+            if (optstr(argc, argv, &i, &s) != 0) return 2;
+            if (!strcmp(s, "sigmoid"))   activation = ACT_SIGMOID;
+            else if (!strcmp(s, "tanh")) activation = ACT_TANH;
+            else if (!strcmp(s, "relu")) activation = ACT_RELU;
+            else {
+                fprintf(stderr, "bpnn: -a %s is not an activation. Use sigmoid, tanh or relu.\n", s);
+                return 2;
+            }
+        } else {
+            fprintf(stderr, "bpnn: %s is not an option this program has. Try --help.\n", argv[i]);
+            return 2;
+        }
     }
     if (mode == 2) return score(path, argc, argv, first);
     if (mode != 1) { usage(); return 2; }
 
     if (hidden < 1 || epochs < 1 || nseed < 1) {
-        fprintf(stderr, "bpnn: hidden, epochs and refits must be positive\n");
+        fprintf(stderr, "bpnn: hidden units, epochs and refits must each be at least 1\n");
         return 2;
     }
-    if (read_csv(path) != 0) { fprintf(stderr, "bpnn: cannot read %s\n", path); rc = 1; goto out; }
-    if (nrow == 0) { fprintf(stderr, "bpnn: no data rows\n"); rc = 1; goto out; }
+    if (rate <= 0 || momentum < 0 || momentum >= 1) {
+        fprintf(stderr, "bpnn: the learning rate must be positive and the momentum in [0, 1)\n");
+        return 2;
+    }
+    if (holdout < 0 || holdout >= 1) {
+        fprintf(stderr, "bpnn: --holdout is a fraction of the rows, so it must be in [0, 1).\n"
+                        "Use 0 to fit on every row, and read the warning it prints.\n");
+        return 2;
+    }
+    if (read_csv(path) != 0) { rc = 1; goto out; }
+    if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
     if (regroup() != 0) { fprintf(stderr, "bpnn: out of memory\n"); rc = 1; goto out; }
     for (g = 0; g < ngroup; g++) {
         if (gp[g].n < 4) {

@@ -40,14 +40,21 @@ Do not change behaviour without changing these first.
 ## Build and test
 
     make            # build ./bpnn and ./bpnn_worker
-    make ut         # unit suite, 32 checks -- the commit gate
-    make ut-asan    # under AddressSanitizer
-    make ut-ubsan   # under UBSan
+    make check      # ut + cliut -- the commit gate
+    make ut         # unit suite, 32 checks
+    make cliut      # black-box, 91 checks: the built binary through a shell
+    make ut-asan    # both suites under AddressSanitizer
+    make ut-ubsan   # both suites under UBSan
     make pedantic   # -pedantic plus -Wextra -Wshadow -Wconversion; must be clean
     make tools      # resolve, pairstat and the benchmark extractors; runs both self-tests
     make clean
 
-`make ut` is the commit gate. Run the sanitizers before committing. A warning is a defect.
+`make check` is the commit gate. Run the sanitizers before committing; they build the binary as well
+as the suite, because the CSV reader is only reachable through it. A warning is a defect.
+
+**`make ut` cannot see a refusal.** It links the engine and calls functions, so it never sees an exit
+code, a usage text or a message. Every guard belongs in `tests/cli.sh` with one check per refusal, and
+when a user hits something no test caught, the first question is which suite could have caught it.
 
 ## Module map
 
@@ -70,6 +77,7 @@ at the root.
     c/bpnn.c        the tabular CLI: linearr's CSV in, one network per group, a case scored
     c/main.c        the older single-topology worker; prints a machine-readable RESULT line
     tests/tests.c   -DUNIT_TEST unit suite: rng act net xor arena data conv1d conv2f
+    tests/cli.sh    black-box: usage, exit codes, every refusal, and the numeric invariances
 
     validation/resolve.c       is a comparison real, how many runs would make it real, what ceiling
     validation/pairstat.c      paired statistics with named tests -- see below
@@ -178,14 +186,14 @@ passes; that trade is fine as long as it is printed.
 The direction is a companion tool for linearr, up to the shape of the 2011 length-of-stay job. In
 order, because each step is the ground the next one stands on:
 
-1. **Guards and tests before anything else.** The reader currently accepts what it should refuse: a
-   non-numeric term reads as zero, a row with an unparseable response is skipped without a word, and
-   `nan` and `inf` parse and propagate. linearr refuses each of these naming the row and the term,
-   after three reviewers found exactly this class in it. Then the numeric cases its suite grew:
-   a term in dollars beside an indicator, an offset response, a constant column, a group with fewer
-   rows than the holdout needs, and the two ceilings (64 terms, 512 groups) hit from above.
-2. **A black-box suite.** `make ut` calls functions, never the binary, so exit codes, usage on a bare
-   invocation, and every refusal message are untested. linearr's `tests/cli.sh` is the model.
+1. ~~**Guards.**~~ Done. The reader refused nothing: a non-numeric term read as zero, a row with an
+   unparseable response was dropped without a word, and `nan` and `inf` parsed and propagated into
+   every weight with exit 0. Each is now refused naming the line and the column, along with a field
+   count that disagrees with the header, a duplicated term name, a group code too long to store, an
+   unknown option, an option missing its value, and a case that leaves a term unnamed.
+2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, 91 checks, one per refusal plus the numeric
+   invariances (a term in millions and a response offset by 1e8 must fit identically, and the
+   printed prediction must still resolve the response, which at `%g`'s six digits it did not).
 3. **Streaming, per the section above**, behind the same CLI, with `--footprint` and a scale script
    that proves peak memory does not move over a tenfold increase in rows.
 4. **Real data.** The 24-term length-of-stay shape from linearr's example data is the target; FSDD
