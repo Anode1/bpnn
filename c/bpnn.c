@@ -53,6 +53,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/stat.h>   /* the row cache is keyed on the input's size and mtime */
 
 #include "common.h"
 #include "net.h"
@@ -101,6 +102,7 @@ static int    activation = ACT_TANH;
 static long   patience = 8;         /* --patience: checks without improvement before stopping */
 static int    streaming;            /* --stream: fit without holding the rows */
 static long   bufrows = 65536;      /* --buffer: the shuffle window, in rows */
+static const char *cachepath;       /* --cache: keep the scaled rows between runs */
 
 /* ---------------------------------------------------------------- CSV input */
 
@@ -700,6 +702,96 @@ static int shuf_pop(Shuf *s, unsigned char *out, size_t rs)
     return 1;
 }
 
+/* ---------------------------------------------------- the cache between runs
+ *
+ * --stream reads the CSV twice before the first epoch: once for the ranges, once to write the
+ * scaled rows. Neither depends on the hyperparameters, so with --cache both passes are written
+ * to a named file and a later run of any shape reuses them.
+ *
+ * The key is the input's size and modification time. That is what every make-like tool uses and
+ * it is wrong in the same way theirs are: a file rewritten within the same second, to the same
+ * length, with different contents reuses a stale cache. Nothing here can detect that without
+ * reading the file, which is the cost the cache exists to avoid. */
+
+#define CACHE_MAGIC   "BPNNCACH"
+#define CACHE_VERSION 1
+
+typedef struct { long size, mtime; } Stamp;
+
+static int stamp_of(const char *path, Stamp *st)
+{
+    struct stat sb;
+    if (strcmp(path, "-") == 0 || stat(path, &sb) != 0) return -1;
+    st->size = (long)sb.st_size;
+    st->mtime = (long)sb.st_mtime;
+    return 0;
+}
+
+static int put_long(FILE *f, long v)   { return fwrite(&v, sizeof v, 1, f) == 1 ? 0 : -1; }
+static int get_long(FILE *f, long *v)  { return fread(v, sizeof *v, 1, f) == 1 ? 0 : -1; }
+static int put_dbl(FILE *f, double v)  { return fwrite(&v, sizeof v, 1, f) == 1 ? 0 : -1; }
+static int get_dbl(FILE *f, double *v) { return fread(v, sizeof *v, 1, f) == 1 ? 0 : -1; }
+static int put_name(FILE *f, const char *s) { return fwrite(s, NAMELEN, 1, f) == 1 ? 0 : -1; }
+static int get_name(FILE *f, char *s)  { if (fread(s, NAMELEN, 1, f) != 1) return -1;
+                                         s[NAMELEN - 1] = 0; return 0; }
+
+/* Everything the two setup passes produced, so that a later run does not have to repeat them. */
+static int cache_put_header(FILE *f, const Stamp *st, long runs, long steps)
+{
+    long i, j;
+    if (fwrite(CACHE_MAGIC, 8, 1, f) != 1) return -1;
+    if (put_long(f, CACHE_VERSION) || put_long(f, st->size) || put_long(f, st->mtime)) return -1;
+    if (put_long(f, nterm) || put_long(f, ngroup) || put_long(f, nrow)) return -1;
+    if (put_long(f, runs) || put_long(f, steps)) return -1;
+    if (put_name(f, response)) return -1;
+    for (i = 0; i < nterm; i++) if (put_name(f, term[i])) return -1;
+    for (i = 0; i < ngroup; i++) {
+        if (put_name(f, gp[i].name) || put_long(f, gp[i].n) || put_long(f, gp[i].flat)) return -1;
+        if (put_dbl(f, gp[i].tlo) || put_dbl(f, gp[i].thi)) return -1;
+        for (j = 0; j < nterm; j++)
+            if (put_dbl(f, gp[i].lo[j]) || put_dbl(f, gp[i].hi[j])) return -1;
+    }
+    return 0;
+}
+
+/* Returns 0 with the tables filled and the file positioned at the first record, or -1 with the
+ * reason printed, in which case the caller rebuilds. */
+static int cache_get_header(FILE *f, const char *path, const Stamp *want, long *runs, long *steps)
+{
+    char magic[8];
+    long v, i, j, sz, mt;
+    if (fread(magic, 8, 1, f) != 1 || memcmp(magic, CACHE_MAGIC, 8) != 0) {
+        fprintf(stderr, "bpnn: %s is not a bpnn row cache; rebuilding it\n", path);
+        return -1;
+    }
+    if (get_long(f, &v) || v != CACHE_VERSION) {
+        fprintf(stderr, "bpnn: %s was written by another version; rebuilding it\n", path);
+        return -1;
+    }
+    if (get_long(f, &sz) || get_long(f, &mt)) return -1;
+    if (sz != want->size || mt != want->mtime) {
+        fprintf(stderr, "bpnn: the input has changed since %s was written; rebuilding it\n", path);
+        return -1;
+    }
+    if (get_long(f, &nterm) || get_long(f, &ngroup) || get_long(f, &nrow)) return -1;
+    if (nterm < 1 || nterm > MAXTERM || ngroup < 1 || ngroup > MAXGROUP || nrow < 1) {
+        fprintf(stderr, "bpnn: %s is damaged; rebuilding it\n", path);
+        return -1;
+    }
+    if (get_long(f, runs) || get_long(f, steps)) return -1;
+    if (get_name(f, response)) return -1;
+    for (i = 0; i < nterm; i++) if (get_name(f, term[i])) return -1;
+    for (i = 0; i < ngroup; i++) {
+        memset(&gp[i], 0, sizeof gp[i]);
+        if (get_name(f, gp[i].name) || get_long(f, &gp[i].n) || get_long(f, &v)) return -1;
+        gp[i].flat = (int)v;
+        if (get_dbl(f, &gp[i].tlo) || get_dbl(f, &gp[i].thi)) return -1;
+        for (j = 0; j < nterm; j++)
+            if (get_dbl(f, &gp[i].lo[j]) || get_dbl(f, &gp[i].hi[j])) return -1;
+    }
+    return 0;
+}
+
 /* Pass one: the ranges, the row counts, and whether the file arrives sorted by the response. */
 static int scan_ranges(const char *path, long *sorted_runs, long *sorted_steps)
 {
@@ -789,11 +881,28 @@ static int fit_stream(const char *path)
     char          *done = NULL;
     long           sorted_runs = 0, sorted_steps = 0;
     long           i, s, e, k;
+    long           first = 0;
+    Stamp          stamp;
     size_t         rs;
-    int            rc = -1;
+    int            reused = 0, rc = -1;
 
-    if (scan_ranges(path, &sorted_runs, &sorted_steps) != 0) return -1;
-    if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); return -1; }
+    /* With --cache, the two setup passes are skipped whenever the named file already describes
+     * this input. Without it, the cache is a temporary file and the passes always run. */
+    if (cachepath && stamp_of(path, &stamp) == 0) {
+        cache = fopen(cachepath, "rb");
+        if (cache) {
+            if (cache_get_header(cache, cachepath, &stamp, &sorted_runs, &sorted_steps) == 0)
+                reused = 1;
+            else { fclose(cache); cache = NULL; }
+        }
+    }
+    if (!reused) {
+        if (scan_ranges(path, &sorted_runs, &sorted_steps) != 0) return -1;
+        if (nrow == 0) {
+            fprintf(stderr, "bpnn: %s has a header and no data rows\n", path);
+            return -1;
+        }
+    }
     rs = recsize();
     /* A window larger than the file is a window the file cannot fill, and one window per refit is
      * what --stream costs on a small file. The first pass has counted the rows, so cap it here. */
@@ -849,12 +958,26 @@ static int fit_stream(const char *path)
         }
     }
 
-    cache = tmpfile();
-    if (!cache) { fprintf(stderr, "bpnn: cannot open a temporary file for the row cache\n"); goto done; }
-    if (pack_cache(path, cache) != 0) goto done;
+    if (!reused) {
+        cache = cachepath ? fopen(cachepath, "w+b") : tmpfile();
+        if (!cache) {
+            fprintf(stderr, "bpnn: cannot open %s for the row cache\n",
+                    cachepath ? cachepath : "a temporary file");
+            goto done;
+        }
+        if (cachepath && cache_put_header(cache, &stamp, sorted_runs, sorted_steps) != 0) {
+            fprintf(stderr, "bpnn: cannot write %s\n", cachepath);
+            goto done;
+        }
+    }
+    /* Where the records start, taken before any of them are written and after the header is read
+     * back, since every pass over the cache seeks here. */
+    first = ftell(cache);
+    if (first < 0) { fprintf(stderr, "bpnn: cannot seek the row cache\n"); goto done; }
+    if (!reused && pack_cache(path, cache) != 0) goto done;
 
     for (e = 0; e < epochs; e++) {
-        rewind(cache);
+        if (fseek(cache, first, SEEK_SET) != 0) goto done;
         while (fread(rec, rs, 1, cache) == 1) {
             for (s = 0; s < nseed; s++)
                 if (shuf_push(&sh[s], rec, out, rs, bufrows)) {
@@ -886,7 +1009,7 @@ static int fit_stream(const char *path)
         if (patience > 0 && (e + 1) % CHECK == 0) {
             long live = 0;
             for (i = 0; i < k; i++) { sse_st[i] = 0; n_st[i] = 0; }
-            rewind(cache);
+            if (fseek(cache, first, SEEK_SET) != 0) goto done;
             while (fread(rec, rs, 1, cache) == 1) {
                 int32_t g, ord;
                 float t;
@@ -928,7 +1051,7 @@ static int fit_stream(const char *path)
             if (n_best[i]) net_copy_weights(nets[i], bests[i]);
 
     /* One more pass for the errors, in the response's own units. */
-    rewind(cache);
+    if (fseek(cache, first, SEEK_SET) != 0) goto done;
     while (fread(rec, rs, 1, cache) == 1) {
         int32_t g, ord;
         float t;
@@ -1339,6 +1462,9 @@ static void usage(void)
     printf("              file, then one per epoch over a cache. Different training\n");
     printf("              order, so different numbers from the default path.\n");
     printf("  --buffer N  rows in the shuffle window under --stream (default %ld)\n", bufrows);
+    printf("  --cache F   keep --stream's scaled rows in F, so a later run of any shape\n");
+    printf("              skips both passes over the CSV. Rebuilt when the input's size\n");
+    printf("              or modification time changes.\n");
     printf("  --footprint TERMS GROUPS   what a fit of that shape costs in memory\n");
 }
 
@@ -1414,6 +1540,8 @@ int main(int argc, char **argv)
             patience = (long)v;
         } else if (!strcmp(argv[i], "--stream")) {
             streaming = 1;
+        } else if (!strcmp(argv[i], "--cache")) {
+            if (optstr(argc, argv, &i, &cachepath) != 0) return 2;
         } else if (!strcmp(argv[i], "--buffer")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             bufrows = (long)v;
@@ -1454,6 +1582,12 @@ int main(int argc, char **argv)
     }
     if (bufrows < 1) {
         fprintf(stderr, "bpnn: --buffer is a number of rows and must be at least 1\n");
+        return 2;
+    }
+    if (cachepath && !streaming) {
+        fprintf(stderr, "bpnn: --cache holds the scaled rows --stream reads, so it needs\n"
+                        "--stream. Without it the rows are held in memory and there is\n"
+                        "nothing to cache.\n");
         return 2;
     }
     if (streaming) {

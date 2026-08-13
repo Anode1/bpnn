@@ -120,6 +120,7 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | `--holdout X` | 0.25 | fraction of rows kept out of the fit |
 | `--stream` | | fit without holding the rows; see [Memory](#memory-and-files-larger-than-it) |
 | `--buffer N` | 65536 | rows in the shuffle window under `--stream` |
+| `--cache FILE` | | keep `--stream`'s scaled rows in FILE, so a later run skips both passes over the CSV |
 | `--footprint T G` | | what a fit of T terms and G groups costs in memory |
 | `--selftest` | | check the arithmetic and exit |
 
@@ -168,6 +169,14 @@ A row costs `(terms + 1) * 8 + 8` bytes held, so the crossover is around 200,000
 and 35,000 at twenty-four. If the store does not fit, the fit says what it was holding and names the
 flag rather than printing `out of memory`; and once the store passes 64 MB the report prints what it
 cost, since that is the figure that decides whether the next file will fit.
+
+`--cache FILE` keeps the scaled rows between runs. The two setup passes do not depend on any
+hyperparameter, so the cache is valid across different `-H`, `-e`, `-s` and `--holdout`, which is
+what makes it worth having while you are choosing them. On a million rows it takes a run from 1.04 s
+to 0.31 s at `-e 1`, where the setup is all there is. The key is the input's size and modification
+time, and it is wrong in the way every make-like tool is wrong: a file rewritten inside the same
+second, to the same length, with different contents reuses a stale cache. Detecting that would mean
+reading the file, which is the cost the cache exists to avoid.
 
 The two paths give different numbers, and neither is an approximation of the other. The default
 shuffles each group's rows completely every epoch. `--stream` shuffles through a window of `--buffer`
@@ -296,7 +305,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make            build ./bpnn and ./bpnn_worker
     make check      ut + cliut: what must pass before a commit
     make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
-    make cliut      122 black-box checks: the built binary, through a shell
+    make cliut      130 black-box checks: the built binary, through a shell
     make ut-asan    both suites under AddressSanitizer
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean

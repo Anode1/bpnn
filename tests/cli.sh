@@ -52,7 +52,7 @@ check "and exits 2, not 0"      "$rc" "2"
 out=$("$bin" --help); rc=$?
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "10"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "11"
 
 out=$("$bin" --selftest); rc=$?
 check "--selftest exits 0"      "$rc" "0"
@@ -346,6 +346,40 @@ set -e
 check "--footprint refuses a zero count" "$(firstline "$out")" \
       "bpnn: --footprint takes a term count and a group count, both above 0"
 check "--footprint refuses a zero count, exit" "$rc" "2"
+
+# -------------------------------------------------------------------- --cache
+# The two setup passes produce the same scaled rows whatever the hyperparameters, so --cache
+# keeps them between runs. A cached run must be indistinguishable from an uncached one.
+
+# On a copy: one of these checks appends to the input, and every later check still expects
+# ok.csv to be the eight rows it started as.
+cp "$tmp/ok.csv" "$tmp/cache.csv"
+"$bin" -t "$tmp/cache.csv" $FAST --stream --cache "$tmp/c1.bin" > "$tmp/c1.txt" 2>/dev/null
+check "the first run builds the cache" "$([ -s "$tmp/c1.bin" ] && echo yes)" "yes"
+"$bin" -t "$tmp/cache.csv" $FAST --stream --cache "$tmp/c1.bin" > "$tmp/c2.txt" 2>/dev/null
+check "the second run reuses it and agrees" \
+      "$(cmp -s "$tmp/c1.txt" "$tmp/c2.txt" && echo same)" "same"
+check "and both agree with no cache at all" \
+      "$(cmp -s "$tmp/c1.txt" "$tmp/s1.txt" && echo same)" "same"
+check "a reused cache is silent about it" \
+      "$("$bin" -t "$tmp/cache.csv" $FAST --stream --cache "$tmp/c1.bin" 2>&1 >/dev/null \
+         | grep -c 'rebuilding it' || true)" "0"
+
+# The key is the input's size and modification time, so a changed input rebuilds it.
+sleep 1
+printf 'A,90,9\n' >> "$tmp/cache.csv"
+check "a changed input rebuilds the cache" \
+      "$("$bin" -t "$tmp/cache.csv" $FAST --stream --cache "$tmp/c1.bin" 2>&1 >/dev/null \
+         | grep -c 'the input has changed')" "1"
+
+printf 'not a cache at all' > "$tmp/junk.bin"
+check "a file that is not a cache is replaced, not read" \
+      "$("$bin" -t "$tmp/cache.csv" $FAST --stream --cache "$tmp/junk.bin" 2>&1 >/dev/null \
+         | grep -c 'is not a bpnn row cache')" "1"
+
+badopt "--cache without --stream" \
+       "bpnn: --cache holds the scaled rows --stream reads, so it needs" \
+       -t "$tmp/ok.csv" $FAST --cache "$tmp/c1.bin"
 
 # --------------------------------------------------- numerics, not just parsing
 # A suite whose inputs are all around 1 is not a test of numerics. These three cases are the
