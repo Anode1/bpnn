@@ -110,12 +110,13 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | --- | --- | --- |
 | `-t FILE` | | fit: one network per group, model to stdout, report to stderr |
 | `-c FILE` | *(required to score)* | the fitted model to score a case against |
-| `-H N` | 6 | hidden units |
+| `-H N`, `--size N` | 6 | hidden units (`size` is R `nnet`'s name for it) |
 | `-e N` | 3000 | epochs, as a ceiling; see `--patience` |
 | `--patience N` | 8 | stop after N checks, 25 epochs apart, with no improvement; 0 runs every epoch |
 | `-s N` | 5 | refits, which is what the spread and the floor are measured over |
 | `-r X` | 0.3 | learning rate |
 | `-m X` | 0.9 | momentum |
+| `--decay X` | 0 | weight decay: each step also pulls every weight toward zero by `rate*X*w` |
 | `-a NAME` | tanh | hidden activation: `sigmoid`, `tanh` or `relu`; the output stays a sigmoid |
 | `--holdout X` | 0.25 | fraction of rows kept out of the fit |
 | `--stream` | | fit without holding the rows; see [Memory](#memory-and-files-larger-than-it) |
@@ -305,7 +306,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make            build ./bpnn and ./bpnn_worker
     make check      ut + cliut: what must pass before a commit
     make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
-    make cliut      130 black-box checks: the built binary, through a shell
+    make cliut      140 black-box checks: the built binary, through a shell
     make ut-asan    both suites under AddressSanitizer
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean

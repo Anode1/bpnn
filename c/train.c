@@ -38,6 +38,12 @@ fail:
     return NULL;
 }
 
+void trainer_decay(Trainer *t, smb_real lambda)
+{
+    if (t != NULL && lambda >= 0)
+        t->decay = lambda;
+}
+
 smb_real trainer_learn(Trainer *t, const smb_real *x, const smb_real *d)
 {
     Net   *net = t->net;
@@ -89,7 +95,9 @@ smb_real trainer_learn(Trainer *t, const smb_real *x, const smb_real *d)
         }
     }
 
-    /* Apply the updates: dw = rate*grad + momentum*dw_prev; retain dw. */
+    /* Apply the updates: dw = rate*grad + momentum*dw_prev - rate*lambda*w; retain dw.
+     * The decay term is the gradient of (lambda/2) sum w^2, so it is part of the same
+     * step rather than a separate shrink, and it does not touch the biases. */
     for (l = 1; l <= L; l++) {
         const smb_real *prev = net->a[l - 1];
 
@@ -107,7 +115,8 @@ smb_real trainer_learn(Trainer *t, const smb_real *x, const smb_real *d)
                     smb_real g = 0, delta;
                     for (p = 0; p < opos; p++)
                         g += t->beta[l][f * opos + p] * prev[p + k];
-                    delta = t->rate * g + t->momentum * dwf[k];
+                    delta = t->rate * g + t->momentum * dwf[k]
+                            - t->rate * t->decay * wf[k];
                     wf[k]  += delta;
                     dwf[k]  = delta;
                 }
@@ -127,7 +136,8 @@ smb_real trainer_learn(Trainer *t, const smb_real *x, const smb_real *d)
                 smb_real *dwi = t->dw[l] + i * nprev;
                 smb_real  dbi;
                 for (j = 0; j < nprev; j++) {
-                    smb_real delta = t->rate * bi * prev[j] + t->momentum * dwi[j];
+                    smb_real delta = t->rate * bi * prev[j] + t->momentum * dwi[j]
+                                     - t->rate * t->decay * wi[j];
                     wi[j]  += delta;
                     dwi[j]  = delta;
                 }

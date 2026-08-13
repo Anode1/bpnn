@@ -32,6 +32,7 @@ typedef struct {
     Net     *net;                     /* the network being trained (borrowed) */
     smb_real rate;                    /* learning rate r                      */
     smb_real momentum;                /* momentum coefficient alpha in [0,1)  */
+    smb_real decay;                   /* weight decay lambda, 0 for none      */
     smb_real *beta[SMB_MAX_LAYERS];   /* beta[l]: dim[l] error signals        */
     smb_real *dw[SMB_MAX_LAYERS];     /* previous weight deltas, w's shape     */
     smb_real *db[SMB_MAX_LAYERS];     /* previous bias deltas, b's shape       */
@@ -39,8 +40,16 @@ typedef struct {
 
 /* Create a trainer over `net` with the given learning rate and momentum.
  * Allocates its scratch once (previous deltas zeroed). Returns NULL on bad
- * arguments or allocation failure, freeing any partial allocation. */
+ * arguments or allocation failure, freeing any partial allocation. Decay is 0;
+ * set it with trainer_decay. */
 Trainer *trainer_new(Net *net, smb_real rate, smb_real momentum);
+
+/* Weight decay: each step also moves every weight toward zero by
+ * rate * lambda * w, which is the gradient of (lambda/2) sum w^2 added to the
+ * error. Biases are not decayed: a bias is the level of a unit, not the
+ * strength of a connection, and shrinking it moves the fitted surface rather
+ * than smoothing it. Lambda of 0, the default, is no decay. */
+void trainer_decay(Trainer *t, smb_real lambda);
 
 /* One online (stochastic) backprop step on example (x, d): forward pass,
  * back-propagate the error, update every weight and bias in place. Returns the

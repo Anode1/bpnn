@@ -75,6 +75,7 @@ typedef struct {
     long   n;
     double lo[MAXTERM], hi[MAXTERM]; /* per-term training range */
     double tlo, thi;                 /* response range */
+    double ysum, ysq, ysd;           /* the response's own spread, for variance explained */
     Net   *net;
     double train_rmse, held_rmse, run_sd, best_held;
     long   nseed, nheld, epochs_ran;
@@ -103,6 +104,7 @@ static long   patience = 8;         /* --patience: checks without improvement be
 static int    streaming;            /* --stream: fit without holding the rows */
 static long   bufrows = 65536;      /* --buffer: the shuffle window, in rows */
 static const char *cachepath;       /* --cache: keep the scaled rows between runs */
+static double decay;                /* --decay: weight decay lambda, 0 for none */
 
 /* ---------------------------------------------------------------- CSV input */
 
@@ -380,6 +382,7 @@ static void range_init(Group *g)
     long j;
     for (j = 0; j < nterm; j++) { g->lo[j] = 1e300; g->hi[j] = -1e300; }
     g->tlo = 1e300; g->thi = -1e300;
+    g->ysum = g->ysq = 0;
 }
 
 static void range_add(Group *g, const double *x, double y)
@@ -391,6 +394,8 @@ static void range_add(Group *g, const double *x, double y)
     }
     if (y < g->tlo) g->tlo = y;
     if (y > g->thi) g->thi = y;
+    g->ysum += y;
+    g->ysq  += y * y;
 }
 
 static void range_done(Group *g)
@@ -401,6 +406,13 @@ static void range_done(Group *g)
      * arithmetic finite and makes the fit look perfect, so the fact is recorded and reported. */
     g->flat = g->thi <= g->tlo;
     if (g->flat) g->thi = g->tlo + 1.0;
+    /* The spread of the response is the yardstick a fitted error is worth reading against:
+     * an error the size of it means the model does no better than the group's own mean. */
+    if (g->n > 1) {
+        double mean = g->ysum / (double)g->n;
+        double var = g->ysq / (double)g->n - mean * mean;
+        g->ysd = var > 0 ? sqrt(var) : 0.0;
+    }
 }
 
 static void ranges(Group *g)
@@ -490,6 +502,7 @@ static Net *train_one(Group *g, long *ord, long ntr, long nstop, uint32_t seed, 
     net_init(net, &rng);
     t = trainer_new(net, (smb_real)rate, (smb_real)momentum);
     if (!t) { net_free(net); return NULL; }
+    trainer_decay(t, (smb_real)decay);
     if (stopping) {
         best = net_new(dims, 3);
         if (!best) { trainer_free(t); net_free(net); return NULL; }
@@ -714,7 +727,7 @@ static int shuf_pop(Shuf *s, unsigned char *out, size_t rs)
  * reading the file, which is the cost the cache exists to avoid. */
 
 #define CACHE_MAGIC   "BPNNCACH"
-#define CACHE_VERSION 1
+#define CACHE_VERSION 2
 
 typedef struct { long size, mtime; } Stamp;
 
@@ -748,6 +761,10 @@ static int cache_put_header(FILE *f, const Stamp *st, long runs, long steps)
     for (i = 0; i < ngroup; i++) {
         if (put_name(f, gp[i].name) || put_long(f, gp[i].n) || put_long(f, gp[i].flat)) return -1;
         if (put_dbl(f, gp[i].tlo) || put_dbl(f, gp[i].thi)) return -1;
+        /* The response's spread is derived from the rows and cannot be recomputed without
+         * them, so it travels with the cache. Leaving it out made a reused cache report that
+         * a good fit explained nothing. */
+        if (put_dbl(f, gp[i].ysd)) return -1;
         for (j = 0; j < nterm; j++)
             if (put_dbl(f, gp[i].lo[j]) || put_dbl(f, gp[i].hi[j])) return -1;
     }
@@ -786,6 +803,7 @@ static int cache_get_header(FILE *f, const char *path, const Stamp *want, long *
         if (get_name(f, gp[i].name) || get_long(f, &gp[i].n) || get_long(f, &v)) return -1;
         gp[i].flat = (int)v;
         if (get_dbl(f, &gp[i].tlo) || get_dbl(f, &gp[i].thi)) return -1;
+        if (get_dbl(f, &gp[i].ysd)) return -1;
         for (j = 0; j < nterm; j++)
             if (get_dbl(f, &gp[i].lo[j]) || get_dbl(f, &gp[i].hi[j])) return -1;
     }
@@ -950,6 +968,7 @@ static int fit_stream(const char *path)
             nets[i * nseed + s] = n;
             trs[i * nseed + s] = trainer_new(n, (smb_real)rate, (smb_real)momentum);
             if (!trs[i * nseed + s]) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+            trainer_decay(trs[i * nseed + s], (smb_real)decay);
             if (patience > 0) {
                 bests[i * nseed + s] = net_new(dims, 3);
                 if (!bests[i * nseed + s]) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
@@ -1127,6 +1146,16 @@ done:
 
 /* ----------------------------------------------------------- the model file */
 
+/* The share of the response's variance the fit accounts for: 1 - MSE/Var(y), against the group's
+ * own mean as the baseline. Zero means the fit is worth no more than that mean, and it goes
+ * negative when the fit is worse than it. */
+static double explained(const Group *g)
+{
+    if (g->ysd <= 0) return 0.0;
+    return 1.0 - (g->held_rmse * g->held_rmse) / (g->ysd * g->ysd);
+}
+
+
 static void write_model(void)
 {
     long i, j;
@@ -1140,15 +1169,16 @@ static void write_model(void)
     printf("terms %ld", nterm);
     for (j = 0; j < nterm; j++) printf(" %s", term[j]);
     printf("\n");
-    printf("hyper hidden=%ld epochs=%ld rate=%g momentum=%g act=%d holdout=%g seeds=%ld\n",
-           hidden, epochs, rate, momentum, activation, holdout, nseed);
+    printf("hyper hidden=%ld epochs=%ld rate=%g momentum=%g act=%d holdout=%g seeds=%ld decay=%g\n",
+           hidden, epochs, rate, momentum, activation, holdout, nseed, decay);
     for (i = 0; i < ngroup; i++) {
         Group *g = &gp[i];
         Net *n = g->net;
         if (!n) continue;
         printf("GROUP %s rows=%ld held=%ld\n", g->name, g->n, g->nheld);
-        printf("diag train=%.6g held=%.6g sd=%.6g floor=%.6g best=%.6g\n",
-               g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd, g->best_held);
+        printf("diag train=%.6g held=%.6g sd=%.6g floor=%.6g best=%.6g expl=%.4f\n",
+               g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd, g->best_held,
+               explained(g));
         /* 17 significant digits round-trip a double exactly, which the ranges must: they are
          * subtracted from the case at scoring time, so a lost digit here is a lost digit there. */
         printf("target %.17g %.17g\n", g->tlo, g->thi);
@@ -1295,17 +1325,28 @@ static int score(const char *path, int argc, char **argv, int from)
 static void report(void)
 {
     long i;
-    fprintf(stderr, "%-10s %6s %6s %8s %7s %10s %10s %10s %10s\n",
-            "group", "rows", "held", "weights", "epochs", "train", "held-out", "refit sd", "floor");
+    fprintf(stderr, "%-10s %6s %6s %8s %7s %10s %10s %10s %10s %6s\n",
+            "group", "rows", "held", "weights", "epochs", "train", "held-out", "refit sd",
+            "floor", "expl");
     for (i = 0; i < ngroup; i++) {
         Group *g = &gp[i];
         long nw, ntr;
         if (!g->net) continue;
         nw = (long)net_nweights(g->net);
         ntr = g->n - g->nheld;
-        fprintf(stderr, "%-10s %6ld %6ld %8ld %7ld %10.5g %10.5g %10.5g %10.5g\n",
+        if (!isfinite(g->held_rmse) || !isfinite(g->train_rmse)) {
+            fprintf(stderr, "%-10s %6ld %6ld %8ld %7ld   DIVERGED: the weights left the range of a\n"
+                            "  number. The learning rate (-r %g), the momentum (-m %g) or the decay\n"
+                            "  (--decay %g) is too large for this data. Nothing in this group's model\n"
+                            "  is usable.\n",
+                    g->name, g->n, g->nheld, nw, g->epochs_ran ? g->epochs_ran : epochs,
+                    rate, momentum, decay);
+            continue;
+        }
+        fprintf(stderr, "%-10s %6ld %6ld %8ld %7ld %10.5g %10.5g %10.5g %10.5g %5.0f%%\n",
                 g->name, g->n, g->nheld, nw, g->epochs_ran ? g->epochs_ran : epochs,
-                g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd);
+                g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd,
+                100.0 * explained(g));
         /* the network's analogue of a regression's degrees of freedom: least squares pins the
          * terms it cannot identify and says how many, but a network has no such notion and will
          * quietly spend a free parameter per row, so the count has to be put next to the rows */
@@ -1314,6 +1355,14 @@ static void report(void)
                             "  parameters than examples, so some of what it learned is the rows\n"
                             "  themselves. Reduce -H, or use linearr if the relation may be linear.\n",
                             nw, ntr);
+        /* Underfitting has no loud symptom: both errors are simply large, and large is only
+         * meaningful next to the spread of the thing being predicted. */
+        if (!g->flat && explained(g) < 0.05)
+            fprintf(stderr, "  this fit explains %.0f%% of the variance in %s. The group's own mean\n"
+                            "  scores %.4g and this model scores %.4g, so it is barely using its\n"
+                            "  inputs. Try more hidden units (-H), a longer run (-e), or less\n"
+                            "  --decay; or the relation may not be in these columns.\n",
+                    100.0 * explained(g), response, g->ysd, g->held_rmse);
         if (g->flat)
             fprintf(stderr, "  %s NEVER VARIES in this group: every row has the same value, so the\n"
                             "  errors above are near zero because there was nothing to predict.\n",
@@ -1448,13 +1497,16 @@ static void usage(void)
     printf("  bpnn -c model.txt A x=3          score one case\n");
     printf("  bpnn --selftest                  check the arithmetic\n\n");
     printf("input CSV is linearr's: a header, then GROUP, the response, one column per term.\n\n");
-    printf("  -H N        hidden units (default %ld)\n", hidden);
+    printf("  -H N        hidden units, --size N also (R's nnet calls it size)\n");
+    printf("              (default %ld)\n", hidden);
     printf("  -e N        epochs (default %ld)\n", epochs);
     printf("  -s N        refits, to measure the spread (default %ld)\n", nseed);
     printf("  -r X -m X   learning rate, momentum (default %g, %g)\n", rate, momentum);
     printf("  -a NAME     hidden activation: sigmoid, tanh, relu (default tanh)\n");
     printf("  --holdout X fraction of rows kept out of the fit (default %g; 0 disables\n", holdout);
     printf("              it and makes the reported error meaningless as generalization)\n");
+    printf("  --decay X   weight decay: each step also pulls every weight toward zero\n");
+    printf("              by rate*X*w (default %g, no decay)\n", decay);
     printf("  --patience N  stop a fit after N checks, 25 epochs apart, with no\n");
     printf("              improvement on the rows kept back for that (default %ld; 0\n", patience);
     printf("              runs every epoch of -e)\n");
@@ -1517,7 +1569,7 @@ int main(int argc, char **argv)
             if (optstr(argc, argv, &i, &path) != 0) return 2;
             mode = 2; first = i + 1;
             break;                     /* everything after the model file is the case */
-        } else if (!strcmp(argv[i], "-H")) {
+        } else if (!strcmp(argv[i], "-H") || !strcmp(argv[i], "--size")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             hidden = (long)v;
         } else if (!strcmp(argv[i], "-e")) {
@@ -1538,6 +1590,9 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--patience")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             patience = (long)v;
+        } else if (!strcmp(argv[i], "--decay")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            decay = v;
         } else if (!strcmp(argv[i], "--stream")) {
             streaming = 1;
         } else if (!strcmp(argv[i], "--cache")) {
@@ -1569,6 +1624,19 @@ int main(int argc, char **argv)
 
     if (hidden < 1 || epochs < 1 || nseed < 1) {
         fprintf(stderr, "bpnn: hidden units, epochs and refits must each be at least 1\n");
+        return 2;
+    }
+    if (decay < 0) {
+        fprintf(stderr, "bpnn: --decay is a penalty on the size of the weights and cannot be\n"
+                        "negative; 0, the default, is no decay.\n");
+        return 2;
+    }
+    /* The decay part of a step is -rate*lambda*w. At rate*lambda >= 1 it carries the weight
+     * past zero and further each step, which diverges rather than regularises. */
+    if (decay * rate >= 1.0) {
+        fprintf(stderr, "bpnn: --decay %g with -r %g gives a decay step of %g times each weight.\n"
+                        "At 1 or more that overshoots zero and grows without bound. Use a decay\n"
+                        "below %g at this learning rate.\n", decay, rate, decay * rate, 1.0 / rate);
         return 2;
     }
     if (rate <= 0 || momentum < 0 || momentum >= 1) {

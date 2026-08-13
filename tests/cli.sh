@@ -52,7 +52,7 @@ check "and exits 2, not 0"      "$rc" "2"
 out=$("$bin" --help); rc=$?
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "11"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "12"
 
 out=$("$bin" --selftest); rc=$?
 check "--selftest exits 0"      "$rc" "0"
@@ -181,7 +181,7 @@ check "-t - fits from stdin" \
 
 "$bin" -t "$tmp/ok.csv" $FAST > "$tmp/m1.txt" 2>"$tmp/r1.txt"
 check "the fit exits 0"          "$?" "0"
-check "the report has a header"  "$(head -1 "$tmp/r1.txt" | awk '{print $1, $NF}')" "group floor"
+check "the report has a header"  "$(head -1 "$tmp/r1.txt" | awk '{print $1, $NF}')" "group expl"
 check "one report row per group" "$(grep -c '^A ' "$tmp/r1.txt")" "1"
 check "the model names the response" "$(grep '^response' "$tmp/m1.txt")" "response y"
 check "the model names the terms"    "$(grep '^terms' "$tmp/m1.txt")" "terms 1 x"
@@ -286,7 +286,7 @@ check "--stream names the response" "$(grep '^response' "$tmp/s1.txt")" "respons
 check "--stream names the terms"    "$(grep '^terms' "$tmp/s1.txt")" "terms 1 x"
 check "--stream fits the group"     "$(grep -c '^GROUP A' "$tmp/s1.txt")" "1"
 check "--stream reports like the default" \
-      "$(grep '^group ' "$tmp/sr1.txt" | awk '{print $1, $NF}')" "group floor"
+      "$(grep '^group ' "$tmp/sr1.txt" | awk '{print $1, $NF}')" "group expl"
 
 # -e is a ceiling on this path too, and the stop rows are held out of the reported error the same
 # way. With --patience 0 every epoch runs and every held-out row is reported.
@@ -346,6 +346,32 @@ set -e
 check "--footprint refuses a zero count" "$(firstline "$out")" \
       "bpnn: --footprint takes a term count and a group count, both above 0"
 check "--footprint refuses a zero count, exit" "$rc" "2"
+
+# ------------------------------------------------- --decay, and underfitting
+# Weight decay pulls every weight toward zero. Enough of it and the network stops using its
+# inputs at all, which is the underfitting case: both errors large and equal, and no warning
+# anywhere until the errors are read against the spread of the thing being predicted.
+
+check "--decay is recorded in the model" \
+      "$("$bin" -t "$tmp/ok.csv" $FAST --decay 0.01 2>/dev/null | grep -c 'decay=0.01')" "1"
+check "a fit worse than the mean is reported as such" \
+      "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 -r 50 2>&1 >/dev/null \
+         | grep -c 'barely using its')" "1"
+badopt "a decay that cannot converge at this rate" \
+       "bpnn: --decay 20 with -r 0.3 gives a decay step of 6 times each weight." \
+       -t "$tmp/ok.csv" $FAST --decay 20
+check "--size is -H under nnet's name" \
+      "$("$bin" -t "$tmp/ok.csv" $FAST --size 3 2>/dev/null | grep -c 'hidden=3')" "1"
+check "and a fit that works says nothing about it" \
+      "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 2>&1 >/dev/null \
+         | grep -c 'barely using its' || true)" "0"
+check "the variance explained is a column" \
+      "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 2>&1 >/dev/null | head -1 | awk '{print $NF}')" "expl"
+check "and is in the model's diag line" \
+      "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 2>/dev/null | grep -c 'expl=')" "1"
+badopt "a negative --decay" \
+       "bpnn: --decay is a penalty on the size of the weights and cannot be" \
+       -t "$tmp/ok.csv" --decay -1
 
 # -------------------------------------------------------------------- --cache
 # The two setup passes produce the same scaled rows whatever the hyperparameters, so --cache
