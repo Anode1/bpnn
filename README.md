@@ -354,6 +354,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean
     make tools      the measurement tools; runs the two self-tests
+    make install    /usr/local, or PREFIX=$HOME/.local
     make clean
 
 A warning is a defect. `make check` gates every commit, and both sanitizers run before one. The
@@ -427,6 +428,7 @@ for the paper that cites it.
 | `AGENTS.md` | the operating manual, and the specific mistakes this line has already paid for |
 | `doc/dev/STYLE.md` | the C ideology: one concept per file, stack-first, allocation at construction, single-exit cleanup |
 | `doc/CLOSED.md` | every claim the closed direction made, and what became of it |
+| [`doc/DIAGNOSTICS.md`](doc/DIAGNOSTICS.md) | what every reported number is, how far it can be trusted, and where it is known to be wrong |
 | [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) | every rate and footprint, the machine they came from, and the script that reproduces each |
 | `bench/compare.sh` | the comparison above, and why each of the four files is in it |
 | `validation/PROVENANCE_nas.md` | where the benchmark data comes from and the commands that regenerate it |

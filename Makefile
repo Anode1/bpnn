@@ -12,12 +12,24 @@
 #   make | check | ut | cliut | ut-asan | ut-ubsan | pedantic | tools | clean
 SHELL = /bin/sh
 
+# The version comes from the git tag, so there is one source for it. Override for a build from
+# a tarball with no history: make BPNN_VERSION=x.y.z
+ifeq ($(origin BPNN_VERSION), undefined)
+BPNN_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
+endif
+ifeq ($(strip $(BPNN_VERSION)),)
+BPNN_VERSION := 0.0.0-dev
+endif
+
+PREFIX  ?= /usr/local
+DESTDIR ?=
+
 CC      = cc
 STD     = -std=c99
 WARN    = -W -Wall
 OPT     = -O2
 CFLAGS  = $(STD) $(WARN) $(OPT)
-CPPFLAGS = -Ic
+CPPFLAGS = -Ic -DBPNN_VERSION='"$(BPNN_VERSION)"'
 LDLIBS  = -lm
 
 ENGINE  = c/rng.o c/act.o c/net.o c/train.o c/arena.o c/data.o c/conv2f.o c/ckpt.o
@@ -25,7 +37,7 @@ SRC     = $(ENGINE:.o=.c)
 PROG    = bpnn
 WORKER  = bpnn_worker
 
-.PHONY: all check ut cliut ut-asan ut-ubsan pedantic tools clean
+.PHONY: all check ut cliut ut-asan ut-ubsan pedantic tools install uninstall clean
 
 all: $(PROG) $(WORKER)
 
@@ -92,6 +104,16 @@ $(TOOLS): %: validation/%.c
 # second format. The input is re-fetched per validation/PROVENANCE_nas.md.
 validation/nb101_triples.txt: validation/nasbench101_trials.txt
 	awk '!/^#/{n=$$1; b=2+n+1; print $$(b+1), $$(b+3), $$(b+5)}' $< > $@
+
+# The binary, and the example data it names in its own messages.
+install: $(PROG)
+	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/bpnn/example
+	cp $(PROG) $(DESTDIR)$(PREFIX)/bin/
+	cp example/*.csv $(DESTDIR)$(PREFIX)/share/bpnn/example/
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(PROG)
+	rm -rf $(DESTDIR)$(PREFIX)/share/bpnn
 
 clean:
 	rm -f c/*.o c/*.d $(PROG) $(WORKER) $(TOOLS) \

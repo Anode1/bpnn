@@ -26,6 +26,10 @@
 #include <sys/stat.h>   /* the row cache is keyed on the input's size and mtime */
 
 #include "common.h"
+
+#ifndef BPNN_VERSION
+#define BPNN_VERSION "0.0.0-dev"
+#endif
 #include "net.h"
 #include "train.h"
 #include "act.h"
@@ -1714,7 +1718,11 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         double v;
         const char *s;
-        if (!strcmp(argv[i], "--selftest")) return selftest();
+        if (!strcmp(argv[i], "--version")) {
+            printf("bpnn %s\n", BPNN_VERSION);
+            return 0;
+        }
+        else if (!strcmp(argv[i], "--selftest")) return selftest();
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(); return 0; }
         else if (!strcmp(argv[i], "-t")) {
             if (optstr(argc, argv, &i, &path) != 0) return 2;

@@ -1,3 +1,8 @@
+> **CLOSED DIRECTION, 2026-08-12.** This file belongs to the architecture-noise measurement
+> work, which produced no publishable finding. `doc/CLOSED.md` lists every claim and what
+> became of it; two numbers here are wrong wherever they appear (the 0.084 ceiling is 0.293,
+> the 3,558 indifference class is 26). Kept for the record, not for citation.
+
 # bpnn findings
 
 > **RETRACTED, 2026-08-12.** This document belongs to a closed direction. Several of its headline

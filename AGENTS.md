@@ -181,6 +181,42 @@ state that honestly is linearr's: a `--footprint` that prints the figure for a g
 a sentence asking to be trusted. When G x model does not fit, fit the groups in K batches and pay K
 passes; that trade is fine as long as it is printed.
 
+## What an outside review found, and what is still open
+
+Three reviewers were given the tree in August 2026 with no access to the author's reasoning: an
+ML scientist, a statistician and a C programmer. Between them they demonstrated five failures the
+160-check suite passed, all of the class this program exists to refuse. They are fixed and each
+has a regression check; the commit log has the detail.
+
+What they raised that is NOT fixed, in the order it should be taken up:
+
+1. **The reported error is also the selection statistic.** The shipped refit is chosen by ranking
+   the same held-out numbers that are then reported. The fix is a fourth partition -- train,
+   stop, select, report -- with the report rows touched exactly once.
+2. **The floor is not the quantity it is described as.** It is a 50%-power critical value, using
+   a normal multiplier on a spread estimated from 4 df, for a statistic (a single fit) that the
+   tool does not print. Worse, it throws away the pairing: the split and init seeds depend only
+   on the refit index, so two configurations get identical splits and identical starting weights.
+   A paired MDE measured 0.026 where the printed floor was 0.248, ten times too conservative.
+   `validation/pairstat.c` already computes the paired version and the fit path never calls it.
+3. **Scaling is fitted on the reported rows.** `ranges()` runs over every row of the group before
+   the split, so the input ranges, the target's mapping and the extrapolation warning are all
+   calibrated with the rows later reported as untouched.
+4. **The refits are fitted and thrown away.** A per-case median over the `-s` networks measured
+   1.4% to 8% better on held-out error, and 29% better on a contaminated file, for compute
+   already spent. It also answers the tool's own complaint that refitting moves the answer.
+5. **Min-max scaling on the target is the fragile part.** One extreme response value compresses
+   every other row into a sliver of the output band. This is now detected and reported, not
+   fixed; robust (quantile) scaling of the target is the fix.
+6. **`c/bpnn.c` is 1,700 lines and holds eight concepts**, against STYLE's one per file. Two
+   independently written fitting paths in one file is what produced three of the five defects.
+   Split at least the reader, the model file, the streaming fit and the report.
+
+Not worth doing, measured: **skip-layer connections**. Implemented and tested by the reviewer;
+they added variance faster than capacity on every example file (refit sd 0.78 against 0.086).
+And **a linear output layer**: retuned for the rate it needs, it matched the sigmoid output
+rather than beating it.
+
 ## Roadmap
 
 The direction is a companion tool for linearr, up to the shape of the 2011 length-of-stay job. In
