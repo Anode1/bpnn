@@ -54,8 +54,7 @@ ut: bpnn_ut
 bpnn_ut: tests/tests.c $(SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DUNIT_TEST -o $@ $^ $(LDLIBS)
 
-# Black-box: the built binary through a shell. `make ut` links the engine and calls functions,
-# so it never sees an exit code, a usage text or a refusal message; those live here.
+# cliut: black-box tests of the built binary.
 cliut: $(PROG)
 	sh tests/cli.sh
 
@@ -77,8 +76,8 @@ pedantic:
 	  -fsyntax-only $(SRC) c/main.c c/bpnn.c
 
 # ---- the measurement tools -------------------------------------------------
-# Each is one self-contained .c with no engine dependency. resolve and pairstat refuse
-# to be trusted until their self-tests pass, so the target runs both.
+# One self-contained .c each, no engine dependency. Both self-tests run before the tools are
+# considered usable.
 TOOLS = resolve pairstat nb101_trials nb101_budget nb101_flip nb101_signal nb_ceiling nb201_extract
 
 tools: $(TOOLS)

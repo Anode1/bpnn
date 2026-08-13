@@ -1,9 +1,8 @@
 #!/bin/sh
 # cli.sh: black-box tests: the built binary, driven through a shell, the way a user meets it.
 #
-# `make ut` cannot see any of this. It links the engine and calls functions, so it never sees an
-# exit code, never sees the usage text, and never sees a refusal message. Every guard in the CSV
-# reader and every option error is therefore only testable from here.
+# make ut calls functions; exit codes, the usage text and every refusal message are only
+# testable from here.
 #
 #   make cliut          # or: sh tests/cli.sh
 set -e
@@ -25,8 +24,7 @@ check(){ if [ "$2" = "$3" ]; then ok; else no "$1: expected [$3], got [$2]"; fi;
 # the first line of stderr, which is where every refusal starts
 firstline(){ printf '%s' "$1" | head -1; }
 
-# Fits here are deliberately small: these tests are about what the program refuses and what it
-# says, not about how well it fits. FAST keeps the whole suite inside a few seconds.
+# Small fits: this suite tests messages and exit codes, not fit quality.
 FAST="-e 50 -s 2"
 
 # The fixture every check below fits. It is y = x^2 + 10 over 40 rows: a curve a line cannot
@@ -112,10 +110,10 @@ bad "a non-numeric term" \
     "$tmp/bad.csv:3:3: the term 'x' is 'oops', which is not a number." \
     'group,y,x\nA,1,1\nA,2,oops\n'
 bad "an empty response" \
-    "$tmp/bad.csv:3:2: 'y', the value being predicted, is empty. An empty field is not a zero." \
+    "$tmp/bad.csv:3:2: 'y', the value being predicted, is empty" \
     'group,y,x\nA,1,1\nA,,3\n'
 bad "an empty term" \
-    "$tmp/bad.csv:3:3: the term 'x' is empty. An empty field is not a zero." \
+    "$tmp/bad.csv:3:3: the term 'x' is empty" \
     'group,y,x\nA,1,1\nA,2,\n'
 bad "a short row" \
     "$tmp/bad.csv:3: 2 fields; the header declared 3 (the group, y, and" \

@@ -1,53 +1,23 @@
-/* bpnn.c -- a backpropagation network for tabular data, in the shape of linearr.
+/* bpnn.c -- a backpropagation network for tabular data, in linearr's shape.
  *
- * linearr fits straight lines and says so: given a parabola it reports that the residuals are not
- * random, and stops, because a line is all it has. This is the program you run next. Same CSV layout,
- * same per-group fitting, same fit-then-score split, and a network instead of a line.
+ *     ./bpnn -t data.csv > model.txt     fit one network per group
+ *     ./bpnn -c model.txt A x=3          score one case
+ *     cat cases.csv | ./bpnn -c model.txt   score a stream of them
+ *     ./bpnn --selftest                  check the arithmetic
  *
- *     ./bpnn -t example/curve.csv > model.txt        fit one network per group
- *     ./bpnn -c model.txt A x=3                      score one case
- *     ./bpnn --selftest                              check the arithmetic
- *
- * INPUT is linearr's: a header, then GROUP, the response, and one column per term.
+ * Input is linearr's: a header, then the group, the response, one column per term.
  *
  *     group,value,x
  *     A,46,-6
- *     A,35,-5
  *
- * IT REPORTS THREE WAYS THE FIT CAN BE WRONG. A regression fails differently, so these are not
- * linearr's three.
+ * The model written out is the median of -s refits, not the best of them; picking the best by
+ * held-out error makes that error optimistic by however much was selected for.
  *
- *   1. THE FIT MEMORISED THE ROWS. Two coefficients cannot memorise thirteen points; thirty weights
- *      can, and the training error then measures recall rather than accuracy. So the rows are split,
- *      the fit sees one part, and both errors are reported side by side. When the held-out error is
- *      much the larger, the model learned this table and not the relation behind it.
+ * The report carries three things a regression's does not: the error on rows the fit never saw,
+ * the spread of that error over refits, and a warning when a case falls outside the range each
+ * input was fitted over. README.md explains all three and what they cost.
  *
- *   2. REFITTING GIVES A DIFFERENT ANSWER. Least squares has one solution. A network starts from
- *      random weights and shuffles its examples, so the same rows fitted twice give two models and
- *      two scores. That spread is the resolution of the tool: two configurations closer together
- *      than 2.77 times it cannot be told apart, whichever way the comparison came out. So the fit is
- *      repeated over several seeds and the spread and that limit are both reported.
- *
- *      The model written out is the MEDIAN of the seeds, not the best of them. Selecting the best by
- *      held-out error makes that error optimistic by however much was selected for (Spearman 1904 for
- *      the arithmetic, Cawley & Talbot 2010 for the modern form). Both numbers are printed.
- *
- *   3. A CASE CAN FALL OUTSIDE THE DATA. linearr lists this as something a regression cannot check.
- *      This program can, because scaling an input needs the range it was trained on. Outside that
- *      range the units saturate and the prediction is flat, with nothing in the number to show it,
- *      whereas a line keeps going in the direction the data suggested. So scoring reports every input
- *      outside its training range and how far outside it is.
- *
- * Three it cannot check: a term missing from the table, rows that are not independent of each other,
- * and a relation that changed after the training rows were collected.
- *
- * WHEN NOT TO USE IT. If the relation is close to linear, use linearr: it is more accurate, it
- * returns coefficients you can read, and it has one answer rather than a distribution of them. Use
- * this program where a line leaves structure in the residuals. bench/compare.sh measures both on the
- * same files, so the crossover is measured rather than asserted.
- *
- * PRECISION. The engine computes in `smb_real`, which is float, so about seven digits. linearr
- * validates against NIST reference values to eleven. Nothing here should be trusted past six.
+ * smb_real is float, so about seven digits; nothing here is good past six.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,8 +39,9 @@
 #define NAMELEN   64
 #define LINELEN   SMB_LINE_MAX
 #define Z95       1.959964
-#define TLO       0.1   /* the target is mapped into [TLO, THI]: a sigmoid output */
-#define THI       0.9   /* cannot reach 0 or 1, and asking it to only saturates it */
+/* Target band for the sigmoid output. 0 and 1 are unreachable and just saturate. */
+#define TLO       0.1
+#define THI       0.9
 
 typedef struct {
     char   name[NAMELEN];
@@ -168,8 +139,7 @@ static double rowcost(void)
     return ((double)nterm + 1.0) * (double)sizeof(double) + (double)sizeof(long);
 }
 
-/* The row store is the whole of what the default path spends. When it runs out, say what was
- * being held and name the option that does not hold it. */
+/* On running out, print the row count, the per-row cost, and mention --stream. */
 static void oom_rows(const char *doing)
 {
     fprintf(stderr, "bpnn: out of memory %s: %ld rows at %.0f bytes each is %.3g GB.\n"
@@ -179,12 +149,8 @@ static void oom_rows(const char *doing)
             nterm, ngroup > 0 ? ngroup : 1);
 }
 
-/* A field that must be a finite number. WHAT names it for the message, LINE locates it.
- *
- * Each refusal here is a value that would otherwise reach a weight. An empty field read as zero,
- * a nan multiplied through the layers, or a row dropped without a message all produce the same
- * result: a model that trained, printed a number and exited 0. Nothing later in the program can
- * detect that, so the check is here. */
+/* A field that must be a finite number. Bad values here become weights, and nothing downstream
+ * can tell. WHAT names the field, LINE and COL locate it. */
 static const char *inpath = "-";     /* what the messages name; set by reader_open */
 
 static int number(const char *s, const char *what, long line, long col, double *out)
@@ -193,8 +159,7 @@ static int number(const char *s, const char *what, long line, long col, double *
     double v;
 
     if (*s == '\0') {
-        fprintf(stderr, "%s:%ld:%ld: %s is empty. An empty field is not a zero.\n",
-                inpath, line, col, what);
+        fprintf(stderr, "%s:%ld:%ld: %s is empty\n", inpath, line, col, what);
         return -1;
     }
     v = strtod(s, &end);
@@ -212,9 +177,8 @@ static int number(const char *s, const char *what, long line, long col, double *
     return 0;
 }
 
-/* A name from the header or the group column: non-empty, and short enough to store whole. A
- * truncated group name is the one that matters, because two distinct groups sharing a prefix
- * would then be fitted as one, with no message. */
+/* A header or group name: non-empty, and short enough to store whole. Truncating a group name
+ * merges two groups into one fit. */
 static int checkname(const char *s, const char *what, long line, long col)
 {
     if (*s == '\0') {
@@ -463,9 +427,8 @@ static double unscale_out(const Group *g, double a)
     return g->tlo + (a - TLO) / (THI - TLO) * (g->thi - g->tlo);
 }
 
-/* Enough significant digits to show a prediction move across the range it was fitted on. A
- * response near 1e8 that varies over 60 prints as 1e+08 at %g's six digits, for every case in
- * the group: six digits are all spent on the offset. */
+/* Digits enough to show the prediction move across its fitted range. At %g's default six, a
+ * response near 1e8 varying over 60 prints as 1e+08 for every case. */
 static int sigdigits(double v, double span)
 {
     int d = 6;
@@ -702,22 +665,13 @@ done:
 
 /* ---------------------------------------------------- fitting from a stream */
 
-/* The default path holds every row in memory. This one does not. It reads the file twice, once
- * for the ranges and once to write a cache of the scaled rows, then makes one pass over that
- * cache per epoch. Memory is the networks plus the shuffle windows. Neither depends on the
- * number of rows.
+/* Fitting without the row store. Two passes over the CSV -- ranges, then a cache of the scaled
+ * rows -- and one pass over that cache per epoch. Memory is the networks plus the shuffle
+ * windows; still one pass per epoch, only the row store goes away.
  *
- * Least squares needs one pass because its objective has a fixed-size sufficient statistic.
- * Backpropagation has none: the gradient depends on the current weights, so every epoch has to
- * see the rows again. Streaming removes the storage, not the passes.
+ * Different training order from the default path, so different numbers. Both deterministic.
  *
- * The two paths give different numbers. The default shuffles each group's rows completely every
- * epoch; this one shuffles through a window of --buffer rows, so the training order differs.
- * Both are deterministic. The default is the one the archived numbers come from.
- *
- * A cache record holds the group, the row's ordinal within that group, and the scaled terms and
- * target. Scaling here means an epoch is a sequential read with no arithmetic per row except the
- * network's own. */
+ * A cache record: group, the row's ordinal in it, the scaled terms, the scaled target. */
 
 #define REC_HEAD  (2 * sizeof(int32_t))
 
@@ -726,11 +680,9 @@ static size_t recsize(void)
     return REC_HEAD + (size_t)(nterm + 1) * sizeof(float);
 }
 
-/* Which rows are held out, from a hash of the row's position rather than a draw from the
- * training PRNG. A draw would move the split whenever the training consumed a different number
- * of random numbers, which is a change in the split for an unrelated reason. The seed is part of
- * the hash so that each refit holds out a different quarter, as the default path does; the
- * reported spread is over splits as well as over starting weights. */
+/* Row roles from a hash of the row's position, not from the training PRNG: a draw would move
+ * the split whenever training consumed a different number of random values. The seed is in the
+ * hash, so each refit holds out a different quarter. */
 static uint32_t mix32(uint32_t a, uint32_t b, uint32_t c)
 {
     uint32_t h = a * 0x9E3779B1u + b * 0x85EBCA6Bu + c * 0xC2B2AE35u;
@@ -758,8 +710,7 @@ static int rowrole(long g, long ord, long seed)
     return (mix32((uint32_t)ord, (uint32_t)seed, (uint32_t)g) & 1u) ? ROLE_STOP : ROLE_REPORT;
 }
 
-/* A window of records in random order: push one in, take one out. Memory is the window size,
- * where a full permutation would need eight bytes per row of the file. */
+/* Shuffle window: push a record in, take one out. A full permutation would cost 8 bytes a row. */
 typedef struct {
     unsigned char *buf;
     long           fill;
@@ -780,8 +731,7 @@ static int shuf_push(Shuf *s, const unsigned char *in, unsigned char *out, size_
     return 1;
 }
 
-/* Empty the window in random order at the end of a pass, so one epoch is one visit to each
- * row and no row is carried over into the next epoch. */
+/* Drain the window at the end of a pass: one epoch, one visit per row. */
 static int shuf_pop(Shuf *s, unsigned char *out, size_t rs)
 {
     long j;
@@ -793,16 +743,11 @@ static int shuf_pop(Shuf *s, unsigned char *out, size_t rs)
     return 1;
 }
 
-/* ---------------------------------------------------- the cache between runs
+/* The cache between runs.
  *
- * --stream reads the CSV twice before the first epoch: once for the ranges, once to write the
- * scaled rows. Neither depends on the hyperparameters, so with --cache both passes are written
- * to a named file and a later run of any shape reuses them.
- *
- * The key is the input's size and modification time. That is what every make-like tool uses and
- * it is wrong in the same way theirs are: a file rewritten within the same second, to the same
- * length, with different contents reuses a stale cache. Nothing here can detect that without
- * reading the file, which is the cost the cache exists to avoid. */
+ * Neither setup pass depends on a hyperparameter, so --cache keeps them in a named file and a
+ * later run of any shape reuses them. Keyed on the input's size and mtime, with the usual
+ * weakness: a rewrite inside the same second to the same length is not detected. */
 
 #define CACHE_MAGIC   "BPNNCACH"
 #define CACHE_VERSION 2
@@ -1353,9 +1298,8 @@ static int read_model(const char *path)
 
 /* ------------------------------------------------------------------- score  */
 
-/* One case: the prediction on stdout, every caveat on stderr. Splitting them is what makes the
- * scorer usable as a pipeline stage; the warnings are for a person, the number is for a program.
- * WHERE names the case in the warnings (an argument, or a file and line). */
+/* One case: prediction on stdout, caveats on stderr, so the scorer works in a pipe. WHERE names
+ * the case in the warnings. */
 static void score_one(Group *g, const double *raw, const int *given, const char *where)
 {
     smb_real xn[MAXTERM];
@@ -1386,8 +1330,7 @@ static void score_one(Group *g, const double *raw, const int *given, const char 
                 where);
 }
 
-/* Cases from a stream, one per line: the group code then one value per term, in the order the
- * model names them. Comments and blank lines are skipped, as in the training reader. */
+/* Cases from stdin, one per line: group, then one value per term in the model's order. */
 static int score_stream(void)
 {
     char line[LINELEN], *fld[MAXTERM + 8], where[64];
@@ -1544,16 +1487,15 @@ static void report(void)
                 g->name, g->n, g->nheld, nw, g->epochs_ran ? g->epochs_ran : epochs,
                 g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd,
                 100.0 * explained(g));
-        /* the network's analogue of a regression's degrees of freedom: least squares pins the
-         * terms it cannot identify and says how many, but a network has no such notion and will
-         * quietly spend a free parameter per row, so the count has to be put next to the rows */
+        /* No degrees-of-freedom check exists for a network, so print the weights beside the
+         * rows and let the reader make it. */
         if (nw > ntr)
             fprintf(stderr, "  %ld weights fitted to %ld training rows. There are more free\n"
                             "  parameters than examples, so some of what it learned is the rows\n"
                             "  themselves. Reduce -H, or use linearr if the relation may be linear.\n",
                             nw, ntr);
-        /* Underfitting has no loud symptom: both errors are simply large, and large is only
-         * meaningful next to the spread of the thing being predicted. */
+        /* Underfitting shows only as both errors being large, which means nothing without the
+         * response's own spread to read it against. */
         if (!g->flat && explained(g) < 0.05)
             fprintf(stderr, "  this fit explains %.0f%% of the variance in %s. The group's own mean\n"
                             "  scores %.4g and this model scores %.4g, so it is barely using its\n"
@@ -1658,8 +1600,7 @@ static void bytes_out(const char *label, double b)
     else                     printf("  %-22s %.0f bytes\n", label, b);
 }
 
-/* What a fit of a given shape costs, printed rather than described. No figure below takes a row
- * count, which is the property --stream is for. */
+/* Memory for a given shape. No figure below takes a row count. */
 static int footprint(long terms, long groups)
 {
     double w, net, trainer, per, nets, wins, rowbytes, cachebytes;
@@ -1728,8 +1669,7 @@ static void usage(void)
     printf("  --footprint TERMS GROUPS   what a fit of that shape costs in memory\n");
 }
 
-/* An option's argument. Text that is not a number is refused rather than read as zero: to the
- * caller `-H six` means six hidden units, and to atol it means none. */
+/* A numeric option argument. Non-numeric text is an error, not zero. */
 static int optnum(int argc, char **argv, int *i, double *out)
 {
     char *end;
@@ -1854,12 +1794,9 @@ int main(int argc, char **argv)
     }
     /* The decay part of a step is -rate*lambda*w. At rate*lambda >= 1 it carries the weight
      * past zero and further each step, which diverges rather than regularises. */
-    /* The decay term is subtracted once per ROW, and it sits inside the retained momentum
-     * delta, so the shrink a weight actually sees over an epoch of n rows is
-     * rate*lambda*n/(1-momentum). At the defaults that is 13,000 times lambda on 400 rows, which
-     * is why lambda above about 1e-4 destroys the fit. The bound below is on that quantity, not
-     * on lambda, and the row count is not known until the file is read, so it is checked again
-     * per group once it is. */
+    /* Decay is subtracted per row and sits inside the momentum delta, so a weight's shrink over
+     * an epoch of n rows is rate*lambda*n/(1-momentum) -- 13,000 lambda at the defaults on 400
+     * rows. Checked again per group, where n is known. */
     if (decay * rate >= 1.0) {
         fprintf(stderr, "bpnn: --decay %g at -r %g shrinks every weight by %g of itself per row.\n"
                         "At 1 or more it overshoots zero and diverges. The useful range is far\n"

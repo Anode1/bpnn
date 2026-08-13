@@ -273,8 +273,7 @@ output is a sigmoid, so the prediction cannot leave the response's fitted range 
 an eighth of it in either direction. When a case pushes it against that wall the answer is the wall:
 
     $ ./bpnn -c curve.model A x=400
-    the case: saturated: 1792.72 is the most extreme y this model can return
-    (fitted over [11, 1610])
+    the case: saturated: 1792.72 is the most extreme y this model can return (fitted over [11, 1610])
     A,1792.72
 
 **One extreme response value breaks the whole group.** The target is mapped onto the output unit by
@@ -293,9 +292,9 @@ and a relation that changed after the training rows were collected.
 
 ## What it refuses to read
 
-A bad value in the input is not caught later. An empty field read as a zero, or one `nan`, spreads
-through the training to every weight in the group and to every number the model then prints. So these
-are refused when the file is read, with the line and the column named:
+A bad value in the input is not caught later: an empty field read as a zero, or one `nan`, reaches
+every weight in the group. They are refused when the file is read, with the line and column named the
+way a compiler names them:
 
     $ awk 'NR==118{sub(/,[^,]*$/,",nan")}1' example/nonlinear.csv > rows.csv
     $ ./bpnn -t rows.csv
