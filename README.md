@@ -95,7 +95,7 @@ the same configuration. `floor` is 2.77 times that spread: two configurations cl
 floor cannot be told apart on this data, whichever way the comparison came out.
 
 Scoring prints the fit-time error and the spread again on every prediction. A prediction given to four
-decimals, from a model whose own error is 1.15, would otherwise read as more precise than it is.
+decimals, from a model whose own error is 1.11, would otherwise read as more precise than it is.
 
 ## Groups
 
