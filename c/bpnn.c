@@ -64,7 +64,6 @@
 /* Below this a group cannot be split into a fit, a stopping check and a reported sample of a
  * size worth printing: at 4 rows the reported error was one row and the floor beside it was ten
  * times the error it bounded. */
-#define MINROWS   24
 #define MAXTERM   64
 #define MAXGROUP  512
 #define NAMELEN   64
@@ -106,11 +105,16 @@ static long    nrow, caprow;
 static long   hidden = 6, epochs = 3000, nseed = 5;
 static double rate = 0.3, momentum = 0.9, holdout = 0.25;
 static int    activation = ACT_TANH;
-static long   patience = 8;         /* --patience: checks without improvement before stopping */
+static long   patience = 50;        /* --patience: epochs without improvement before stopping */
 static int    streaming;            /* --stream: fit without holding the rows */
 static long   bufrows = 65536;      /* --buffer: the shuffle window, in rows */
 static const char *cachepath;       /* --cache: keep the scaled rows between runs */
 static double decay;                /* --decay: weight decay lambda, 0 for none */
+/* Below this a group cannot be split into a fit, a stopping check and a reported sample of a
+ * size worth printing: at four rows the reported error was one row, and the floor printed
+ * beside it was ten times the error it bounded. Overridable, because a small group is still
+ * fittable if you accept that the numbers describing it are noise. */
+static long   minrows = 24;
 
 /* ---------------------------------------------------------------- CSV input */
 
@@ -494,7 +498,11 @@ static double rmse(Group *g, Net *net, const long *ord, long a, long b);
  * stop, the other half is reported and is never looked at during the fit.
  *
  * EPOCHS_OUT, when not NULL, receives the number of epochs actually run. */
-#define CHECK 25
+/* Checked every epoch. At 25 the first look already came after the optimum on the example data
+ * -- every reported epoch count was a multiple of 25 and none was below 225 -- so the interval
+ * was deciding the answer. The check reads the stopping rows only, an eighth of the file, and
+ * early stopping saves far more than it costs. */
+#define CHECK 1
 
 static Net *train_one(Group *g, long *ord, long ntr, long nstop, uint32_t seed, long *epochs_out)
 {
@@ -1161,11 +1169,12 @@ static int fit_stream(const char *path)
         double m = 0, v = 0, mid;
         long med = 0;
         int nohold = 0;
-        if (g->n < MINROWS) {
-            fprintf(stderr, "bpnn: group %s has %ld rows. Under %d the fitted, stopping and\n"
+        if (g->n < minrows) {
+            fprintf(stderr, "bpnn: group %s has %ld rows. Under %ld the fitted, stopping and\n"
                             "reported samples are all too small to mean anything, so the group is\n"
-                            "skipped. Pool it with another, or fit it with linearr.\n",
-                    g->name, g->n, MINROWS);
+                            "skipped. Pool it with another, fit it with linearr, or say\n"
+                            "--min-rows %ld and read the numbers knowing what they rest on.\n",
+                    g->name, g->n, minrows, g->n);
             continue;
         }
         nohold = 0;
@@ -1608,11 +1617,14 @@ static void usage(void)
     printf("  -a NAME     hidden activation: sigmoid, tanh, relu (default tanh)\n");
     printf("  --holdout X fraction of rows kept out of the fit (default %g; 0 disables\n", holdout);
     printf("              it and makes the reported error meaningless as generalization)\n");
+    printf("  --min-rows N  skip a group with fewer than N rows (default %ld). Below it\n", minrows);
+    printf("              the fitted, stopping and reported samples are all too small\n");
+    printf("              for the report to describe anything\n");
     printf("  --decay X   weight decay: each step also pulls every weight toward zero\n");
     printf("              by rate*X*w (default %g, no decay)\n", decay);
-    printf("  --patience N  stop a fit after N checks, 25 epochs apart, with no\n");
-    printf("              improvement on the rows kept back for that (default %ld; 0\n", patience);
-    printf("              runs every epoch of -e)\n");
+    printf("  --patience N  stop a fit after N epochs with no improvement on the rows\n");
+    printf("              kept back to judge that (default %ld; 0 disables the check\n", patience);
+    printf("              and runs every epoch of -e)\n");
     printf("  --stream    fit without holding the rows in memory: two passes over the\n");
     printf("              file, then one per epoch over a cache. Different training\n");
     printf("              order, so different numbers from the default path.\n");
@@ -1699,6 +1711,9 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--patience")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             patience = (long)v;
+        } else if (!strcmp(argv[i], "--min-rows")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            minrows = (long)v;
         } else if (!strcmp(argv[i], "--decay")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             decay = v;
@@ -1733,6 +1748,10 @@ int main(int argc, char **argv)
 
     if (hidden < 1 || epochs < 1 || nseed < 1) {
         fprintf(stderr, "bpnn: hidden units, epochs and refits must each be at least 1\n");
+        return 2;
+    }
+    if (minrows < 1) {
+        fprintf(stderr, "bpnn: --min-rows is a row count and must be at least 1\n");
         return 2;
     }
     if (decay < 0) {
@@ -1783,11 +1802,12 @@ int main(int argc, char **argv)
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
     if (regroup() != 0) { rc = 1; goto out; }
     for (g = 0; g < ngroup; g++) {
-        if (gp[g].n < MINROWS) {
-            fprintf(stderr, "bpnn: group %s has %ld rows. Under %d the fitted, stopping and\n"
+        if (gp[g].n < minrows) {
+            fprintf(stderr, "bpnn: group %s has %ld rows. Under %ld the fitted, stopping and\n"
                             "reported samples are all too small to mean anything, so the group is\n"
-                            "skipped. Pool it with another, or fit it with linearr.\n",
-                    gp[g].name, gp[g].n, MINROWS);
+                            "skipped. Pool it with another, fit it with linearr, or say\n"
+                            "--min-rows %ld and read the numbers knowing what they rest on.\n",
+                    gp[g].name, gp[g].n, minrows, gp[g].n);
             continue;
         }
         if (fit_group(&gp[g]) != 0) {

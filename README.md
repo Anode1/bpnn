@@ -76,23 +76,31 @@ Two commands, and the same split as linearr: standard output is the model, stand
 commentary, so the redirect is the whole workflow.
 
     $ ./bpnn -t example/nonlinear.csv > model.txt
-    group        rows   held  weights  epochs      train   held-out   refit sd      floor
-    001           400     50       18     225     1.0544     1.1134   0.055775     0.1546
-    002           400     50       18     250      1.116      1.133    0.15539    0.43072
+    group        rows   held  weights  epochs      train   held-out   refit sd      floor   expl
+    001           400     50       18      80     1.0731     1.1259   0.046476    0.12882    92%
+    002           400     50       18     110     1.0582     1.2553    0.13946    0.38654    92%
 
     $ ./bpnn -c model.txt 001 dose=5 age=60
-    001 los = 16.778
-    held-out RMSE at fit time 1.11337, spread over refits 0.0557752
+    001 los = 16.9648
+    held-out RMSE at fit time 1.12591, spread over refits 0.0464764
 
 `-t` fits every group in one pass; `-c` names the model to score against and is required, because
 which model produced a number is part of the number. **Column 2 is the value being predicted**, and
 columns 3 onward are the terms, exactly as in linearr. Nothing in the data can say which column you
 meant.
 
-The four numbers on the right are the report. `train` is the error on the rows the fit saw, `held-out`
-the error on the rows it did not. `refit sd` is the spread of the held-out figure over repeated fits of
-the same configuration. `floor` is 2.77 times that spread: two configurations closer together than the
-floor cannot be told apart on this data, whichever way the comparison came out.
+The numbers on the right are the report. `train` is the error on the rows the fit saw, `held-out` the
+error on the rows it did not, and `expl` is the share of those rows' variance the fit accounts for --
+zero means the group's own mean would have done as well. `refit sd` is the spread of the held-out
+figure over repeated fits of the same configuration, and `floor` is 2.77 times it.
+
+**Read the floor as a rough scale, not as a test.** It is the 95% critical value for a difference
+between two single fits, so a true difference exactly equal to it is found about half the time; it is
+computed from a spread estimated on 4 degrees of freedom at the default `-s 5`, which is itself
+uncertain by about a third; and the number printed beside it is a median over refits, not a single
+fit. Two configurations differing by less than the floor are not distinguished by this data. Two
+differing by more are worth a closer look, not a conclusion. `validation/resolve.c` does the closer
+look properly.
 
 Scoring prints the fit-time error and the spread again on every prediction. A prediction given to four
 decimals, from a model whose own error is 1.11, would otherwise read as more precise than it is.
@@ -112,7 +120,8 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | `-c FILE` | *(required to score)* | the fitted model to score a case against |
 | `-H N`, `--size N` | 6 | hidden units (`size` is R `nnet`'s name for it) |
 | `-e N` | 3000 | epochs, as a ceiling; see `--patience` |
-| `--patience N` | 8 | stop after N checks, 25 epochs apart, with no improvement; 0 runs every epoch |
+| `--patience N` | 50 | stop after N epochs with no improvement on the rows kept back to judge it; 0 disables |
+| `--min-rows N` | 24 | skip a group with fewer rows; below this every reported number is noise |
 | `-s N` | 5 | refits, which is what the spread and the floor are measured over |
 | `-r X` | 0.3 | learning rate |
 | `-m X` | 0.9 | momentum |
@@ -203,14 +212,14 @@ and then the training error measures recall, not accuracy. So the rows are split
 the fitted rows and on the held-out rows are printed side by side. If the second is much larger, the
 model learned this table rather than the relation behind it.
 
-    $ ./bpnn -t ~/linearr/example/simple-train.csv > /dev/null
-    group        rows   held  weights  epochs      train   held-out   refit sd      floor
-    A               7      2       18    3000 1.4796e-05     5.2607     1.5361     4.2577
-      18 weights fitted to 5 training rows. There are more free
+    $ ./bpnn -t curve.csv -H 24
+    group        rows   held  weights  epochs      train   held-out   refit sd      floor   expl
+    A              40      5       48      28     32.523     13.597     4.5637      12.65   100%
+      48 weights fitted to 35 training rows. There are more free
       parameters than examples, so some of what it learned is the rows
       themselves. Reduce -H, or use linearr if the relation may be linear.
-      held-out error is 355556.7x the training error: this network is fitting
-      the rows rather than the relation. Fewer hidden units, or more rows.
+      the spread over refits is 34% of the error itself, so a single fit
+      of this configuration does not pin down its quality.
 
 **When it stops.** `-e` is a ceiling, not a count. The fit checks its error every 25 epochs on rows
 kept back for that purpose, keeps the weights from the best check, and gives up after `--patience`
@@ -237,11 +246,32 @@ program can check it, because scaling an input needs the range it was trained on
 stored in the model. Outside the range the units saturate and the prediction goes flat:
 
     $ ./bpnn -c model.txt 001 dose=25 age=60
-    001 los = 22.0926
-    held-out RMSE at fit time 1.11337, spread over refits 0.0557752
+    001 los = 22.1105
+    held-out RMSE at fit time 1.12591, spread over refits 0.0464764
     OUTSIDE THE TRAINING RANGE: dose=25, trained on [0.0118, 9.9804], out by 1.51 of that span
     A network does not extrapolate. Past the range above its units saturate and it
     returns a flat value with no warning of its own, so treat this number as a guess.
+
+There is a second limit under that one, and it can bite while every input is still in range. The
+output is a sigmoid, so the prediction cannot leave the response's fitted range by more than about
+an eighth of it in either direction. When a case pushes it against that wall the answer is the wall:
+
+    $ ./bpnn -c curve.model A x=400
+    A y = 1792.72
+    AT THE LIMIT OF WHAT THIS MODEL CAN SAY: the output unit is saturated, so
+    1792.72 is the most extreme y it can return (y was fitted over [11, 1610]).
+    The true value may be far past it.
+
+**One extreme response value breaks the whole group.** The target is mapped onto the output unit by
+its smallest and largest value, so a single row far from the rest squeezes every ordinary row into a
+sliver of the range the network can resolve. The fit then cannot separate them, and the variance
+explained is measured against that same inflated spread, so it reads high while the model is useless.
+The distance from the quartiles is measured and reported:
+
+      los REACHES 26089 INTERQUARTILE RANGES past its own quartiles in this
+      group. The target is scaled by its smallest and largest value, so
+      every ordinary row is squeezed into a sliver of the output's range
+      and the fit cannot separate them.
 
 Three it cannot check: a term missing from the table, rows that are not independent of each other,
 and a relation that changed after the training rows were collected.
@@ -276,7 +306,7 @@ a 4-core i7-1165G7; RMSE, lower is better.
 |---|---|---|---|---|
 | exactly linear, no noise | 0 | **0** | no complaint | 4.51 |
 | y = x² + 10, no noise | 0 | 13.49 | wrong shape, term named | **0.96** |
-| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.13 |
+| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.26 |
 | y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.23 |
 
 Then the comparison a network is usually not put through: the same line, with the one extra column

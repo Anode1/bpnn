@@ -66,8 +66,8 @@ row() {  # label, file, floor, bpnn extra args
     printf '%-34s %8s %10s %22s %10s %10s\n' "$lab" "$fl" "$sd" "$vd" "$1" "$2"
 }
 
-row "train.csv (exactly linear)"       "$HOME/linearr/example/train.csv" "0"
-row "curve.csv (y=x^2+10)"             "$HOME/linearr/example/curve.csv" "0"    --holdout 0
+row "train.csv (exactly linear)"       "$HOME/linearr/example/train.csv" "0"    --min-rows 5
+row "curve.csv (y=x^2+10)"             "$HOME/linearr/example/curve.csv" "0"    --holdout 0 --min-rows 5
 row "nonlinear.csv (saturate+interact)" example/nonlinear.csv            "1.0"
 row "interaction.csv (y=x1*x2)"        example/interaction.csv           "1.0"  -s 15 -e 8000 -H 8
 

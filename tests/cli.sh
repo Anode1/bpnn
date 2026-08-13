@@ -47,7 +47,7 @@ out=$("$bin" --help); rc=$?
 set -e
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "12"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "13"
 
 set +e
 out=$("$bin" --selftest); rc=$?
