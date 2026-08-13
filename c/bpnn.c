@@ -185,27 +185,27 @@ static void oom_rows(const char *doing)
  * a nan multiplied through the layers, or a row dropped without a message all produce the same
  * result: a model that trained, printed a number and exited 0. Nothing later in the program can
  * detect that, so the check is here. */
-static int number(const char *s, const char *what, long line, double *out)
+static const char *inpath = "-";     /* what the messages name; set by reader_open */
+
+static int number(const char *s, const char *what, long line, long col, double *out)
 {
     char *end;
     double v;
 
     if (*s == '\0') {
-        fprintf(stderr, "bpnn: %s is empty on line %ld. An empty field is not a zero, and\n"
-                        "choosing what to put there is a modelling decision, not a parse.\n",
-                what, line);
+        fprintf(stderr, "%s:%ld:%ld: %s is empty. An empty field is not a zero.\n",
+                inpath, line, col, what);
         return -1;
     }
     v = strtod(s, &end);
     while (*end == ' ' || *end == '\t') end++;
     if (end == s || *end != '\0') {
-        fprintf(stderr, "bpnn: %s is '%s' on line %ld, which is not a number.\n", what, s, line);
+        fprintf(stderr, "%s:%ld:%ld: %s is '%s', which is not a number.\n",
+                inpath, line, col, what, s);
         return -1;
     }
     if (!isfinite(v)) {
-        fprintf(stderr, "bpnn: %s is '%s' on line %ld. A nan or an infinity reaches every\n"
-                        "weight in the group and every number the model then prints.\n",
-                what, s, line);
+        fprintf(stderr, "%s:%ld:%ld: %s is '%s': not finite\n", inpath, line, col, what, s);
         return -1;
     }
     *out = v;
@@ -215,15 +215,15 @@ static int number(const char *s, const char *what, long line, double *out)
 /* A name from the header or the group column: non-empty, and short enough to store whole. A
  * truncated group name is the one that matters, because two distinct groups sharing a prefix
  * would then be fitted as one, with no message. */
-static int checkname(const char *s, const char *what, long line)
+static int checkname(const char *s, const char *what, long line, long col)
 {
     if (*s == '\0') {
-        fprintf(stderr, "bpnn: %s is empty on line %ld.\n", what, line);
+        fprintf(stderr, "%s:%ld:%ld: %s is empty\n", inpath, line, col, what);
         return -1;
     }
     if (strlen(s) >= NAMELEN) {
-        fprintf(stderr, "bpnn: %s on line %ld is longer than %d characters: '%s'.\n",
-                what, line, NAMELEN - 1, s);
+        fprintf(stderr, "%s:%ld:%ld: %s is longer than %d characters: '%s'\n",
+                inpath, line, col, what, NAMELEN - 1, s);
         return -1;
     }
     return 0;
@@ -242,6 +242,7 @@ static int reader_open(Reader *rd, const char *path)
 {
     rd->f = strcmp(path, "-") ? fopen(path, "r") : stdin;
     rd->path = path;
+    inpath = path;
     rd->lineno = 0;
     rd->header = 0;
     if (!rd->f) { fprintf(stderr, "bpnn: cannot open %s\n", path); return -1; }
@@ -267,34 +268,36 @@ static int reader_row(Reader *rd, long *grp, double *y, double *x)
         /* fgets splits an over-long line in two, and the tail would then be read as a row of
          * its own. Refuse it rather than fit half a row. */
         if (strchr(line, '\n') == NULL && !feof(rd->f)) {
-            fprintf(stderr, "bpnn: line %ld is longer than %d characters.\n",
-                    rd->lineno, LINELEN - 1);
+            fprintf(stderr, "%s:%ld: line is longer than %d characters\n",
+                    inpath, rd->lineno, LINELEN - 1);
             return -1;
         }
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
         nf = split_csv(line, fld, MAXTERM + 8);
         if (!rd->header) {
             if (nf < 3) {
-                fprintf(stderr, "bpnn: the header on line %ld needs a group column, the value\n"
-                                "being predicted, and at least one term.\n", rd->lineno);
+                fprintf(stderr, "%s:%ld: the header needs a group column, the value being\n"
+                                "predicted, and at least one term\n", inpath, rd->lineno);
                 return -1;
             }
             nterm = nf - 2;
             if (nterm > MAXTERM) {
-                fprintf(stderr, "bpnn: %ld terms on line %ld; this build holds %d.\n",
-                        nterm, rd->lineno, MAXTERM);
+                fprintf(stderr, "%s:%ld: %ld terms; this build holds %d\n",
+                        inpath, rd->lineno, nterm, MAXTERM);
                 return -1;
             }
-            if (checkname(fld[1], "the name of the value being predicted", rd->lineno) != 0)
+            if (checkname(fld[1], "the name of the value being predicted", rd->lineno, 2) != 0)
                 return -1;
             strncpy(response, fld[1], NAMELEN - 1);
             for (i = 0; i < nterm; i++) {
                 int j;
-                if (checkname(fld[i + 2], "a term name", rd->lineno) != 0) return -1;
+                if (checkname(fld[i + 2], "a term name", rd->lineno, (long)(i + 3)) != 0)
+                    return -1;
                 for (j = 0; j < i; j++)
                     if (!strcmp(term[j], fld[i + 2])) {
-                        fprintf(stderr, "bpnn: the header names the term '%s' twice, so a case\n"
-                                        "naming it could mean either column.\n", fld[i + 2]);
+                        fprintf(stderr, "%s:%ld:%ld: the term '%s' is named twice, so a case\n"
+                                        "naming it could mean either column\n",
+                                inpath, rd->lineno, (long)(i + 3), fld[i + 2]);
                         return -1;
                     }
                 strncpy(term[i], fld[i + 2], NAMELEN - 1);
@@ -303,19 +306,22 @@ static int reader_row(Reader *rd, long *grp, double *y, double *x)
             continue;
         }
         if (nf != nterm + 2) {
-            fprintf(stderr, "bpnn: line %ld has %d field%s; the header declared %ld (the group,\n"
-                            "%s, and %ld term%s).\n", rd->lineno, nf, nf == 1 ? "" : "s",
+            fprintf(stderr, "%s:%ld: %d field%s; the header declared %ld (the group, %s, and\n"
+                            "%ld term%s)\n", inpath, rd->lineno, nf, nf == 1 ? "" : "s",
                     nterm + 2, response, nterm, nterm == 1 ? "" : "s");
             return -1;
         }
-        if (checkname(fld[0], "the group", rd->lineno) != 0) return -1;
+        if (checkname(fld[0], "the group", rd->lineno, 1) != 0) return -1;
         *grp = group_of(fld[0]);
-        if (*grp < 0) { fprintf(stderr, "bpnn: more than %d groups.\n", MAXGROUP); return -1; }
+        if (*grp < 0) {
+            fprintf(stderr, "%s:%ld:1: more than %d groups\n", inpath, rd->lineno, MAXGROUP);
+            return -1;
+        }
         snprintf(what, sizeof what, "'%s', the value being predicted,", response);
-        if (number(fld[1], what, rd->lineno, y) != 0) return -1;
+        if (number(fld[1], what, rd->lineno, 2, y) != 0) return -1;
         for (i = 0; i < nterm; i++) {
             snprintf(what, sizeof what, "the term '%s'", term[i]);
-            if (number(fld[i + 2], what, rd->lineno, &x[i]) != 0) return -1;
+            if (number(fld[i + 2], what, rd->lineno, (long)(i + 3), &x[i]) != 0) return -1;
         }
         return 1;
     }
@@ -1347,81 +1353,168 @@ static int read_model(const char *path)
 
 /* ------------------------------------------------------------------- score  */
 
-static int score(const char *path, int argc, char **argv, int from)
+/* One case: the prediction on stdout, every caveat on stderr. Splitting them is what makes the
+ * scorer usable as a pipeline stage; the warnings are for a person, the number is for a program.
+ * WHERE names the case in the warnings (an argument, or a file and line). */
+static void score_one(Group *g, const double *raw, const int *given, const char *where)
 {
-    double raw[MAXTERM];
-    int given[MAXTERM];
-    const char *grp = NULL;
-    long i, out = 0;
-    Group *g;
     smb_real xn[MAXTERM];
-    if (read_model(path) != 0) { fprintf(stderr, "bpnn: %s is not a bpnn model\n", path); return 1; }
-    memset(given, 0, sizeof given);
-    for (i = 0; i < nterm; i++) raw[i] = 0.0;
-    for (i = from; i < argc; i++) {
-        char *eq = strchr(argv[i], '=');
-        if (!eq) { grp = argv[i]; continue; }
-        *eq = '\0';
-        { long j, hit = -1;
-          char *end;
-          double v;
-          for (j = 0; j < nterm; j++) if (!strcmp(term[j], argv[i])) hit = j;
-          if (hit < 0) { fprintf(stderr, "bpnn: '%s' is not a term in this model\n", argv[i]); return 2; }
-          v = strtod(eq + 1, &end);
-          if (end == eq + 1 || *end != '\0' || !isfinite(v)) {
-              fprintf(stderr, "bpnn: %s=%s is not a finite number\n", argv[i], eq + 1);
-              return 2;
-          }
-          raw[hit] = v; given[hit] = 1; }
-    }
-    if (!grp) { fprintf(stderr, "bpnn: name the group to score, e.g. ./bpnn -c %s A x=3\n", path); return 2; }
-    /* An unnamed term is scored as zero, a value the caller did not supply and usually outside
-     * the range the group was trained on. Refuse instead of answering a different case. */
-    { long j, missing = 0;
-      for (j = 0; j < nterm; j++) if (!given[j]) missing++;
-      if (missing) {
-          fprintf(stderr, "bpnn: this model has %ld term%s and %ld %s not given:",
-                  nterm, nterm == 1 ? "" : "s", missing,
-                  missing == 1 ? "was" : "were");
-          for (j = 0; j < nterm; j++) if (!given[j]) fprintf(stderr, " %s", term[j]);
-          fprintf(stderr, "\nA missing term would be scored as zero, which is a different case\n"
-                          "from the one you asked about.\n");
-          return 2;
-      } }
-    { long j, hit = -1;
-      for (j = 0; j < ngroup; j++) if (!strcmp(gp[j].name, grp)) hit = j;
-      if (hit < 0) { fprintf(stderr, "bpnn: group '%s' is not in this model\n", grp); return 2; }
-      g = &gp[hit]; }
-    if (!g->net) { fprintf(stderr, "bpnn: group '%s' has no fitted network\n", grp); return 2; }
+    double a, p;
+    long i;
+    int out = 0;
+
     scale_in(g, raw, xn);
-    { double a = (double)net_forward(g->net, xn)[0];
-      double p = unscale_out(g, a);
-      printf("%s %s = %.*g\n", grp, response, sigdigits(p, g->thi - g->tlo), p);
-      /* The output unit saturates at 0 and 1, which is 12.5% of the fitted range past each end.
-       * Within a hair of that the answer is the ceiling, not a prediction, and every input can
-       * be in range while the output is not. */
-      if (a < 0.02 || a > 0.98)
-          printf("AT THE LIMIT OF WHAT THIS MODEL CAN SAY: the output unit is saturated, so\n"
-                 "%.6g is the most extreme %s it can return (%s was fitted over [%.6g, %.6g]).\n"
-                 "The true value may be far past it.\n",
-                 p, response, response, g->tlo, g->thi); }
-    printf("held-out RMSE at fit time %.6g, spread over refits %.6g\n", g->held_rmse, g->run_sd);
-    /* the check linearr says a regression cannot make */
+    a = (double)net_forward(g->net, xn)[0];
+    p = unscale_out(g, a);
+    printf("%s,%.*g\n", g->name, sigdigits(p, g->thi - g->tlo), p);
+
+    if (a < 0.02 || a > 0.98)
+        fprintf(stderr, "%s: saturated: %.6g is the most extreme %s this model can return "
+                        "(fitted over [%.6g, %.6g])\n", where, p, response, g->tlo, g->thi);
     for (i = 0; i < nterm; i++) {
         double span = g->hi[i] - g->lo[i];
         if (!given[i]) continue;
         if (raw[i] < g->lo[i] || raw[i] > g->hi[i]) {
             double over = raw[i] < g->lo[i] ? (g->lo[i] - raw[i]) : (raw[i] - g->hi[i]);
-            printf("OUTSIDE THE TRAINING RANGE: %s=%g, trained on [%g, %g], out by %.3g of that span\n",
-                   term[i], raw[i], g->lo[i], g->hi[i], over / span);
+            fprintf(stderr, "%s: %s=%g is outside the fitted range [%g, %g], by %.3g of it\n",
+                    where, term[i], raw[i], g->lo[i], g->hi[i], span > 0 ? over / span : 0.0);
             out++;
         }
     }
     if (out)
-        printf("A network does not extrapolate. Past the range above its units saturate and it\n"
-               "returns a flat value with no warning of its own, so treat this number as a guess.\n");
-    for (i = 0; i < ngroup; i++) if (gp[i].net) net_free(gp[i].net);
+        fprintf(stderr, "%s: a network does not extrapolate; past its range the units saturate\n",
+                where);
+}
+
+/* Cases from a stream, one per line: the group code then one value per term, in the order the
+ * model names them. Comments and blank lines are skipped, as in the training reader. */
+static int score_stream(void)
+{
+    char line[LINELEN], *fld[MAXTERM + 8], where[64];
+    double raw[MAXTERM];
+    int given[MAXTERM];
+    long lineno = 0, n = 0, i;
+    int nf;
+
+    for (i = 0; i < nterm; i++) given[i] = 1;
+    while (fgets(line, sizeof line, stdin)) {
+        long gi = -1;
+        lineno++;
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        nf = split_csv(line, fld, MAXTERM + 8);
+        if (nf != (int)nterm + 1) {
+            fprintf(stderr, "-:%ld: %d field%s; this model wants the group and %ld term%s\n",
+                    lineno, nf, nf == 1 ? "" : "s", nterm, nterm == 1 ? "" : "s");
+            return 1;
+        }
+        /* A header line naming the terms is accepted and skipped, so the same file can be fed
+         * to the trainer and to the scorer. */
+        if (n == 0 && !strcmp(fld[1], term[0])) continue;
+        for (i = 0; i < ngroup; i++) if (!strcmp(gp[i].name, fld[0])) gi = i;
+        if (gi < 0 || !gp[gi].net) {
+            fprintf(stderr, "-:%ld:1: group '%s' is not in this model\n", lineno, fld[0]);
+            return 1;
+        }
+        snprintf(where, sizeof where, "-:%ld", lineno);
+        for (i = 0; i < nterm; i++) {
+            char what[NAMELEN + 32];
+            snprintf(what, sizeof what, "the term '%s'", term[i]);
+            inpath = "-";
+            if (number(fld[i + 1], what, lineno, i + 2, &raw[i]) != 0) return 1;
+        }
+        score_one(&gp[gi], raw, given, where);
+        n++;
+    }
+    if (ferror(stdin)) { fprintf(stderr, "bpnn: error reading the cases\n"); return 1; }
     return 0;
+}
+
+static int score(const char *path, int argc, char **argv, int from)
+{
+    double raw[MAXTERM];
+    int given[MAXTERM];
+    const char *grp = NULL;
+    long i;
+    Group *g;
+    int rc = 2;
+
+    if (read_model(path) != 0) {
+        fprintf(stderr, "bpnn: %s is not a bpnn model\n", path);
+        return 1;
+    }
+    memset(given, 0, sizeof given);
+    for (i = 0; i < nterm; i++) raw[i] = 0.0;
+
+    /* No case on the command line: read them from stdin, one per line. This is the form a
+     * pipeline uses, and the only one that scores more than a single row per process. */
+    if (from >= argc) {
+        rc = score_stream();
+        goto out;
+    }
+
+    for (i = from; i < argc; i++) {
+        char *eq = strchr(argv[i], '=');
+        if (!eq) {
+            if (grp) {
+                fprintf(stderr, "bpnn: two group names given, '%s' and '%s'\n", grp, argv[i]);
+                goto out;
+            }
+            grp = argv[i];
+            continue;
+        }
+        *eq = '\0';
+        {
+            long j, hit = -1;
+            char *end;
+            double v;
+            for (j = 0; j < nterm; j++) if (!strcmp(term[j], argv[i])) hit = j;
+            if (hit < 0) {
+                fprintf(stderr, "bpnn: '%s' is not a term in this model\n", argv[i]);
+                goto out;
+            }
+            v = strtod(eq + 1, &end);
+            if (end == eq + 1 || *end != '\0' || !isfinite(v)) {
+                fprintf(stderr, "bpnn: %s=%s is not a finite number\n", argv[i], eq + 1);
+                goto out;
+            }
+            raw[hit] = v;
+            given[hit] = 1;
+        }
+    }
+    if (!grp) {
+        fprintf(stderr, "bpnn: name the group to score, e.g. ./bpnn -c %s A x=3\n", path);
+        goto out;
+    }
+    {
+        long j, hit = -1, missing = 0;
+        for (j = 0; j < ngroup; j++) if (!strcmp(gp[j].name, grp)) hit = j;
+        if (hit < 0) {
+            fprintf(stderr, "bpnn: group '%s' is not in this model\n", grp);
+            goto out;
+        }
+        g = &gp[hit];
+        if (!g->net) {
+            fprintf(stderr, "bpnn: group '%s' has no fitted network\n", grp);
+            goto out;
+        }
+        /* An unnamed term is scored as zero, a value the caller did not supply and usually
+         * outside the range the group was trained on. Refuse instead of answering another case. */
+        for (j = 0; j < nterm; j++) if (!given[j]) missing++;
+        if (missing) {
+            fprintf(stderr, "bpnn: this model has %ld term%s and %ld %s not given:",
+                    nterm, nterm == 1 ? "" : "s", missing, missing == 1 ? "was" : "were");
+            for (j = 0; j < nterm; j++) if (!given[j]) fprintf(stderr, " %s", term[j]);
+            fprintf(stderr, "\nA missing term would be scored as zero, a different case.\n");
+            goto out;
+        }
+    }
+    fprintf(stderr, "the case: held-out RMSE at fit time %.6g, spread over refits %.6g\n",
+            g->held_rmse, g->run_sd);
+    score_one(g, raw, given, "the case");
+    rc = 0;
+out:
+    for (i = 0; i < ngroup; i++) if (gp[i].net) net_free(gp[i].net);
+    return rc;
 }
 
 /* -------------------------------------------------------------------- misc  */

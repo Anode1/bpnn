@@ -103,34 +103,34 @@ bad() {  # label, expected first line of stderr, file contents
 }
 
 bad "a nan term" \
-    "bpnn: the term 'x' is 'nan' on line 3. A nan or an infinity reaches every" \
+    "$tmp/bad.csv:3:3: the term 'x' is 'nan': not finite" \
     'group,y,x\nA,1,1\nA,2,nan\n'
 bad "an infinite response" \
-    "bpnn: 'y', the value being predicted, is 'inf' on line 3. A nan or an infinity reaches every" \
+    "$tmp/bad.csv:3:2: 'y', the value being predicted, is 'inf': not finite" \
     'group,y,x\nA,1,1\nA,inf,3\n'
 bad "a non-numeric term" \
-    "bpnn: the term 'x' is 'oops' on line 3, which is not a number." \
+    "$tmp/bad.csv:3:3: the term 'x' is 'oops', which is not a number." \
     'group,y,x\nA,1,1\nA,2,oops\n'
 bad "an empty response" \
-    "bpnn: 'y', the value being predicted, is empty on line 3. An empty field is not a zero, and" \
+    "$tmp/bad.csv:3:2: 'y', the value being predicted, is empty. An empty field is not a zero." \
     'group,y,x\nA,1,1\nA,,3\n'
 bad "an empty term" \
-    "bpnn: the term 'x' is empty on line 3. An empty field is not a zero, and" \
+    "$tmp/bad.csv:3:3: the term 'x' is empty. An empty field is not a zero." \
     'group,y,x\nA,1,1\nA,2,\n'
 bad "a short row" \
-    "bpnn: line 3 has 2 fields; the header declared 3 (the group," \
+    "$tmp/bad.csv:3: 2 fields; the header declared 3 (the group, y, and" \
     'group,y,x\nA,1,1\nA,2\n'
 bad "a long row" \
-    "bpnn: line 3 has 4 fields; the header declared 3 (the group," \
+    "$tmp/bad.csv:3: 4 fields; the header declared 3 (the group, y, and" \
     'group,y,x\nA,1,1\nA,2,3,4\n'
 bad "a term named twice" \
-    "bpnn: the header names the term 'x' twice, so a case" \
+    "$tmp/bad.csv:1:4: the term 'x' is named twice, so a case" \
     'group,y,x,x\nA,1,1,2\n'
 bad "a header of two columns" \
-    "bpnn: the header on line 1 needs a group column, the value" \
+    "$tmp/bad.csv:1: the header needs a group column, the value being" \
     'group,y\nA,1\n'
 bad "an empty group code" \
-    "bpnn: the group is empty on line 2." \
+    "$tmp/bad.csv:2:1: the group is empty" \
     'group,y,x\n,1,1\n'
 
 set +e
@@ -151,7 +151,8 @@ check "a header and nothing else exit" "$rc" "1"
 set +e
 out=$("$bin" -t "$tmp/many.csv" $FAST 2>&1 >/dev/null); rc=$?
 set -e
-check "more groups than the build holds" "$(firstline "$out")" "bpnn: more than 512 groups."
+check "more groups than the build holds" "$(firstline "$out")" \
+      "$tmp/many.csv:514:1: more than 512 groups"
 check "and it says so before fitting"    "$rc" "1"
 
 # A group name too long to store would be truncated, and two long names sharing a prefix would
@@ -162,7 +163,7 @@ set +e
 out=$("$bin" -t "$tmp/long.csv" $FAST 2>&1 >/dev/null); rc=$?
 set -e
 check "an over-long group name" "$(firstline "$out")" \
-      "bpnn: the group on line 2 is longer than 63 characters: '$long'."
+      "$tmp/long.csv:2:1: the group is longer than 63 characters: '$long'"
 
 # Comments and blank lines are ordinary, not errors.
 printf '# a note\n\ngroup,y,x\n# another\nA,1,1\nA,2,2\nA,3,3\nA,4,4\nA,5,5\n' > "$tmp/cmt.csv"
@@ -212,9 +213,33 @@ check "--holdout 0 warns" "$(printf '%s' "$out" | grep -c 'NO HELD-OUT ROWS')" "
 # --------------------------------------------------------------- what it scores
 
 M=$tmp/m1.txt
-check "a case is scored" "$("$bin" -c "$M" A x=3 | head -1 | cut -d= -f1)" "A y "
-check "the fit-time error comes with it" \
-      "$("$bin" -c "$M" A x=3 | sed -n 2p | cut -d' ' -f1-4)" "held-out RMSE at fit"
+# stdout is the answer, stderr is the commentary: that split is what makes it a pipeline stage.
+check "a case is scored to stdout as CSV" "$("$bin" -c "$M" A x=3 2>/dev/null)" "A,$("$bin" -c "$M" A x=3 2>/dev/null | cut -d, -f2)"
+check "and nothing but the answer is on stdout" \
+      "$("$bin" -c "$M" A x=3 2>/dev/null | wc -l | tr -d ' ')" "1"
+check "the fit-time error goes to stderr" \
+      "$("$bin" -c "$M" A x=3 2>&1 >/dev/null | head -1 | cut -d' ' -f1-5)" "the case: held-out RMSE at"
+
+# Cases from a pipe: the form a deployed predictor actually uses.
+check "a pipe of cases gives one line each" \
+      "$(printf 'A,3\nA,4\nA,5\n' | "$bin" -c "$M" 2>/dev/null | wc -l | tr -d ' ')" "3"
+check "and each line names its group" \
+      "$(printf 'A,3\nA,4\n' | "$bin" -c "$M" 2>/dev/null | cut -d, -f1 | sort -u)" "A"
+check "a header line is skipped, so a training file scores" \
+      "$(printf 'group,x\nA,3\n' | "$bin" -c "$M" 2>/dev/null | wc -l | tr -d ' ')" "1"
+check "a case with the wrong field count is refused" \
+      "$(printf 'A,3,4\n' | "$bin" -c "$M" 2>&1 >/dev/null | head -1)" \
+      "-:1: 3 fields; this model wants the group and 1 term"
+set +e
+printf 'A,3,4\n' | "$bin" -c "$M" >/dev/null 2>&1; rc=$?
+set -e
+check "and exits 1" "$rc" "1"
+check "a non-numeric case in the stream is refused with its line and column" \
+      "$(printf 'A,oops\n' | "$bin" -c "$M" 2>&1 >/dev/null | head -1)" \
+      "-:1:2: the term 'x' is 'oops', which is not a number."
+check "an unknown group in the stream is refused" \
+      "$(printf 'Q,3\n' | "$bin" -c "$M" 2>&1 >/dev/null | head -1)" \
+      "-:1:1: group 'Q' is not in this model"
 
 badscore() {  # label, expected first line, then arguments after -c MODEL
     lab=$1; want=$2; shift 2
@@ -231,6 +256,7 @@ badscore "an infinite case"   "bpnn: x=inf is not a finite number" A x=inf
 badscore "an unknown term"    "bpnn: 'z' is not a term in this model" A z=1
 badscore "an unknown group"   "bpnn: group 'Q' is not in this model" Q x=1
 badscore "no group named"     "bpnn: name the group to score, e.g. ./bpnn -c $M A x=3" x=1
+badscore "two group names"    "bpnn: two group names given, 'A' and 'B'" A B x=1
 
 set +e
 out=$("$bin" -c "$tmp/ok.csv" A x=1 2>&1 >/dev/null); rc=$?
@@ -240,11 +266,11 @@ check "a CSV offered as a model exits 1" "$rc" "1"
 
 # The extrapolation check: inside the training range it stays quiet, outside it does not.
 check "inside the range, no warning" \
-      "$("$bin" -c "$M" A x=4 | grep -c 'OUTSIDE THE TRAINING RANGE' || true)" "0"
+      "$("$bin" -c "$M" A x=4 2>&1 >/dev/null | grep -c 'outside the fitted range' || true)" "0"
 check "outside it, the term and the distance" \
-      "$("$bin" -c "$M" A x=99 | grep -c 'OUTSIDE THE TRAINING RANGE')" "1"
+      "$("$bin" -c "$M" A x=99 2>&1 >/dev/null | grep -c 'outside the fitted range')" "1"
 check "and what that means" \
-      "$("$bin" -c "$M" A x=99 | grep -c 'does not extrapolate')" "1"
+      "$("$bin" -c "$M" A x=99 2>&1 >/dev/null | grep -c 'does not extrapolate')" "1"
 
 # ---------------------------------------------------------------- --patience
 # -e is a ceiling. The fit stops when the rows kept back for the purpose stop improving, and the
@@ -317,7 +343,7 @@ set +e
 out=$("$bin" -t "$tmp/bad.csv" $FAST --stream 2>&1 >/dev/null); rc=$?
 set -e
 check "--stream refuses a nan too" "$(firstline "$out")" \
-      "bpnn: the term 'x' is 'nan' on line 3. A nan or an infinity reaches every"
+      "$tmp/bad.csv:3:3: the term 'x' is 'nan': not finite"
 check "--stream refuses a nan too, exit" "$rc" "1"
 
 # A window smaller than the file, on a file sorted by the response, trains on nearly the file's
@@ -432,10 +458,10 @@ check "a response offset by 1e8 fits identically" \
 # %g's six significant digits would print 1e+08 for every case in this group: all six spent on
 # the offset. The prediction must still show the part that moves.
 check "and the prediction still resolves the response" \
-      "$("$bin" -c "$tmp/mo.txt" A x=3 | head -1 | sed 's/.*= *//' | cut -c1-6)" "100000"
+      "$("$bin" -c "$tmp/mo.txt" A x=3 2>/dev/null | cut -d, -f2 | cut -c1-6)" "100000"
 check "and not as %g's six digits would print it" \
-      "$("$bin" -c "$tmp/mo.txt" A x=3 | head -1 | sed 's/.*= *//')" \
-      "$(printf '%.9g' "$("$bin" -c "$tmp/mo.txt" A x=3 | head -1 | sed 's/.*= *//')")"
+      "$([ "$("$bin" -c "$tmp/mo.txt" A x=3 2>/dev/null | cut -d, -f2 | wc -c)" -ge 10 ] \
+        && echo yes)" "yes"
 
 # Two columns that differ in the sixth decimal: the fit must not produce a nan or refuse.
 { echo 'group,y,x1,x2'
@@ -493,9 +519,9 @@ check "an extreme response value is reported" \
 # The output unit saturates 12.5% past the fitted range; the prediction is then the ceiling.
 "$bin" -t "$tmp/ok.csv" -e 300 -s 2 > "$tmp/sat.txt" 2>/dev/null
 check "a saturated prediction says so" \
-      "$("$bin" -c "$tmp/sat.txt" A x=400 | grep -c 'AT THE LIMIT OF WHAT THIS MODEL CAN SAY')" "1"
+      "$("$bin" -c "$tmp/sat.txt" A x=400 2>&1 >/dev/null | grep -c 'saturated')" "1"
 check "and an ordinary one does not" \
-      "$("$bin" -c "$tmp/sat.txt" A x=20 | grep -c 'AT THE LIMIT' || true)" "0"
+      "$("$bin" -c "$tmp/sat.txt" A x=20 2>&1 >/dev/null | grep -c 'saturated' || true)" "0"
 
 # ------------------------------------------------------------------------ end
 

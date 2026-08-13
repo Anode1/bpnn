@@ -81,8 +81,25 @@ commentary, so the redirect is the whole workflow.
     002           400     50       18     110     1.0582     1.2553    0.13946    0.38654    92%
 
     $ ./bpnn -c model.txt 001 dose=5 age=60
-    001 los = 16.9648
-    held-out RMSE at fit time 1.12591, spread over refits 0.0464764
+    the case: held-out RMSE at fit time 1.12591, spread over refits 0.0464764
+    001,16.9648
+
+Standard output is the prediction and nothing else, so scoring is a pipeline stage. With no case on
+the command line it reads them from standard input, one per line, group first and then one value per
+term in the model's order:
+
+    $ printf '001,5,60\n001,7,45\n002,3,70\n' | ./bpnn -c model.txt
+    001,16.9648
+    001,16.9529
+    002,18.0501
+
+A header line naming the terms is skipped, so the file you trained from can be fed straight back in.
+Every caveat -- a term outside its fitted range, a saturated prediction, a group the model does not
+have -- goes to standard error, named by the line it came from:
+
+    $ printf '001,25,60\n' | ./bpnn -c model.txt > predictions.csv
+    -:1: dose=25 is outside the fitted range [0.0118, 9.9804], by 1.51 of it
+    -:1: a network does not extrapolate; past its range the units saturate
 
 `-t` fits every group in one pass; `-c` names the model to score against and is required, because
 which model produced a number is part of the number. **Column 2 is the value being predicted**, and
@@ -117,7 +134,7 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | option | default | meaning |
 | --- | --- | --- |
 | `-t FILE` | | fit: one network per group, model to stdout, report to stderr |
-| `-c FILE` | *(required to score)* | the fitted model to score a case against |
+| `-c FILE` | *(required to score)* | the fitted model to score against; with no case on the command line, cases are read from stdin |
 | `-H N`, `--size N` | 6 | hidden units (`size` is R `nnet`'s name for it) |
 | `-e N` | 3000 | epochs, as a ceiling; see `--patience` |
 | `--patience N` | 50 | stop after N epochs with no improvement on the rows kept back to judge it; 0 disables |
@@ -246,21 +263,19 @@ program can check it, because scaling an input needs the range it was trained on
 stored in the model. Outside the range the units saturate and the prediction goes flat:
 
     $ ./bpnn -c model.txt 001 dose=25 age=60
-    001 los = 22.1105
-    held-out RMSE at fit time 1.12591, spread over refits 0.0464764
-    OUTSIDE THE TRAINING RANGE: dose=25, trained on [0.0118, 9.9804], out by 1.51 of that span
-    A network does not extrapolate. Past the range above its units saturate and it
-    returns a flat value with no warning of its own, so treat this number as a guess.
+    the case: held-out RMSE at fit time 1.12591, spread over refits 0.0464764
+    the case: dose=25 is outside the fitted range [0.0118, 9.9804], by 1.51 of it
+    the case: a network does not extrapolate; past its range the units saturate
+    001,22.7231
 
 There is a second limit under that one, and it can bite while every input is still in range. The
 output is a sigmoid, so the prediction cannot leave the response's fitted range by more than about
 an eighth of it in either direction. When a case pushes it against that wall the answer is the wall:
 
     $ ./bpnn -c curve.model A x=400
-    A y = 1792.72
-    AT THE LIMIT OF WHAT THIS MODEL CAN SAY: the output unit is saturated, so
-    1792.72 is the most extreme y it can return (y was fitted over [11, 1610]).
-    The true value may be far past it.
+    the case: saturated: 1792.72 is the most extreme y this model can return
+    (fitted over [11, 1610])
+    A,1792.72
 
 **One extreme response value breaks the whole group.** The target is mapped onto the output unit by
 its smallest and largest value, so a single row far from the rest squeezes every ordinary row into a
@@ -284,8 +299,7 @@ are refused when the file is read, with the line and the column named:
 
     $ awk 'NR==118{sub(/,[^,]*$/,",nan")}1' example/nonlinear.csv > rows.csv
     $ ./bpnn -t rows.csv
-    bpnn: the term 'age' is 'nan' on line 118. A nan or an infinity reaches every
-    weight in the group and every number the model then prints.
+    rows.csv:118:4: the term 'age' is 'nan': not finite
     $ echo $?
     1
 
