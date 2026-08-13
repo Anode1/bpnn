@@ -36,7 +36,7 @@ Do not change behaviour without changing these first.
     make            # build ./bpnn and ./bpnn_worker
     make check      # ut + cliut -- the commit gate
     make ut         # unit suite, 32 checks
-    make cliut      # black-box, 140 checks: the built binary through a shell
+    make cliut      # black-box, 165 checks: the built binary through a shell
     make ut-asan    # both suites under AddressSanitizer
     make ut-ubsan   # both suites under UBSan
     make pedantic   # -pedantic plus -Wextra -Wshadow -Wconversion; must be clean
@@ -188,18 +188,21 @@ has a regression check; the commit log has the detail.
 
 What they raised that is NOT fixed, in the order it should be taken up:
 
-1. **The reported error is also the selection statistic.** The shipped refit is chosen by ranking
-   the same held-out numbers that are then reported. The fix is a fourth partition -- train,
-   stop, select, report -- with the report rows touched exactly once.
+1. **Choosing a configuration by comparing held-out errors leaves the winner optimistic**, and
+   nothing in the report says so. Report the paired difference, or refit the chosen shape against
+   rows that took no part in the comparison.
 2. **The floor is not the quantity it is described as.** It is a 50%-power critical value, using
    a normal multiplier on a spread estimated from 4 df, for a statistic (a single fit) that the
    tool does not print. Worse, it throws away the pairing: the split and init seeds depend only
    on the refit index, so two configurations get identical splits and identical starting weights.
    A paired MDE measured 0.026 where the printed floor was 0.248, ten times too conservative.
-   `validation/pairstat.c` already computes the paired version and the fit path never calls it.
-3. **Scaling is fitted on the reported rows.** `ranges()` runs over every row of the group before
-   the split, so the input ranges, the target's mapping and the extrapolation warning are all
-   calibrated with the rows later reported as untouched.
+   `pairstat --paired` now does the paired version, but it treats the refits as independent when
+   they are splits of one table: the Nadeau-Bengio correction widens its interval by about a third
+   at five refits and is not applied.
+3. **`--stream` still scales from every row**, since its cache is scaled once and shared across
+   refits. The default path scales per refit from its own training rows. Fixing the streaming
+   path means caching raw values and scaling per refit at training time, at roughly the cost of
+   one extra multiply-add per term per row per epoch.
 4. **The refits are fitted and thrown away.** A per-case median over the `-s` networks measured
    1.4% to 8% better on held-out error, and 29% better on a contaminated file, for compute
    already spent. It also answers the tool's own complaint that refitting moves the answer.
@@ -221,7 +224,7 @@ order, because each step is the ground the next one stands on:
    every weight with exit 0. Each is now refused naming the line and the column, along with a field
    count that disagrees with the header, a duplicated term name, a group code too long to store, an
    unknown option, an option missing its value, and a case that leaves a term unnamed.
-2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, 91 checks, one per refusal plus the numeric
+2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, 165 checks, one per refusal plus the numeric
    invariances (a term in millions and a response offset by 1e8 must fit identically, and the
    printed prediction must still resolve the response, which at `%g`'s six digits it did not).
 3. ~~**Streaming.**~~ Done as `--stream`, with `--footprint` and `scripts/scale.sh`. Measured over a
@@ -230,7 +233,7 @@ order, because each step is the ground the next one stands on:
    are implemented, and so is point 5. -e is a ceiling on both paths, a fit stops when the rows
    kept back for that purpose stop improving, and --cache keeps the scaled rows between runs,
    keyed on the input's size and mtime, so the two setup passes happen once: on a million rows
-   that is 1.04 s down to 0.31 s at -e 1.
+   that is 2.5 s down to 1.8 s at -e 1.
 4. **Real data.** The 24-term length-of-stay shape from linearr's example data is the target; FSDD
    (`data/fsdd/PROVENANCE.md`) is the non-tabular check the engine already has paths for.
 5. **A classifier**, which needs more than one output and a softmax with cross-entropy. Not before the

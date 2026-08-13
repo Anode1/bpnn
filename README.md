@@ -77,23 +77,25 @@ commentary, so the redirect is the whole workflow.
 
     $ ./bpnn -t example/nonlinear.csv > model.txt
     group        rows   held  weights  epochs      train   held-out   refit sd      floor   expl
-    001           400     50       18      80     1.0731     1.1259   0.046476    0.12882    92%
-    002           400     50       18     110     1.0582     1.2553    0.13946    0.38654    92%
+    001           400     50       25      80     1.0728      1.135   0.046012    0.12754    92%
+    002           400     50       25       9     1.1515     1.2135    0.16096    0.44616    92%
 
     $ ./bpnn -c model.txt 001 dose=5 age=60
-    the case: held-out RMSE at fit time 1.12591, spread over refits 0.0464764
-    001,16.9648
+    the case: held-out RMSE at fit time 1.13502, spread over refits 0.0460124
+    001,16.9632
 
 Standard output is the prediction and nothing else, so scoring is a pipeline stage. With no case on
 the command line it reads them from standard input, one per line, group first and then one value per
 term in the model's order:
 
     $ printf '001,5,60\n001,7,45\n002,3,70\n' | ./bpnn -c model.txt
-    001,16.9648
-    001,16.9529
-    002,18.0501
+    001,16.9632
+    001,16.951
+    002,17.874
 
-A header line naming the terms is skipped, so the file you trained from can be fed straight back in.
+A header line is skipped if its second field is the first term's name, so a cases file may carry one.
+A *training* file cannot be fed back as cases: it still has the response column, and the field count
+will not match.
 Every caveat -- a term outside its fitted range, a saturated prediction, a group the model does not
 have -- goes to standard error, named by the line it came from:
 
@@ -107,15 +109,15 @@ columns 3 onward are the terms, exactly as in linearr. Nothing in the data can s
 meant.
 
 The numbers on the right are the report. `train` is the error on the rows the fit saw, `held-out` the
-error on the rows it did not, and `expl` is the share of those rows' variance the fit accounts for --
-zero means the group's own mean would have done as well. `refit sd` is the spread of the held-out
+error on the rows it did not, and `expl` is the share of those rows' variance the fit accounts for:
+zero means the group's own mean would have done as well. `weights` counts every fitted parameter,
+biases included. `refit sd` is the spread of the held-out
 figure over repeated fits of the same configuration, and `floor` is 2.77 times it.
 
 **Read the floor as a rough scale, not as a test.** It is the 95% critical value for a difference
 between two single fits, so a true difference exactly equal to it is found about half the time; it is
 computed from a spread estimated on 4 degrees of freedom at the default `-s 5`, which is itself
-uncertain by about a third; and the number printed beside it is a median over refits, not a single
-fit. Two configurations differing by less than the floor are not distinguished by this data. Two
+uncertain by about a third; and the number printed beside it is a mean over refits, not a single fit. Two configurations differing by less than the floor are not distinguished by this data. Two
 differing by more are worth a closer look, not a conclusion. The paired comparison in
 [`doc/DIAGNOSTICS.md`](doc/DIAGNOSTICS.md) does the closer look properly, and is several times
 sharper than this scale.
@@ -160,7 +162,7 @@ report says so. It is there for the case where the relation is noiseless and kno
 
 By default every row is held in memory. `--stream` does not hold them: it reads the file twice, once
 for the ranges and once to write a cache of the scaled rows, and then reads that cache once per epoch,
-plus once more every 25 epochs to see whether the fits have stopped improving. Memory is then the
+plus once more per epoch to see whether the fits have stopped improving. Memory is then the
 networks plus the shuffle windows, and neither depends on the number of rows.
 
 Least squares needs one pass because its objective has a fixed-size sufficient statistic.
@@ -172,12 +174,11 @@ groups):
 
     $ scripts/scale.sh 100000
                                             100000 rows 1000000 rows
-    --stream, peak RSS (kB)                        8704         8576
-    default, peak RSS (kB)                         7620        56772
+    --stream, peak RSS (kB)                        8832         8832
+    default, peak RSS (kB)                         6088        39308
 
 The default path grows with the rows. `--stream` does not. But note the left-hand column: at 100,000
-rows `--stream` costs *more*, because it pays for one shuffle window per refit whatever the file
-size. It is worth turning on when the row store stops fitting, not before. `--footprint TERMS GROUPS`
+rows `--stream` costs *more*, because it pays for one shuffle window per refit whatever the file size. It is worth turning on when the row store stops fitting, not before. `--footprint TERMS GROUPS`
 prints both figures for a shape before you run anything:
 
     $ ./bpnn --footprint 24 400
@@ -185,7 +186,7 @@ prints both figures for a shape before you run anything:
 
     fitting with --stream
       per group per refit    1.25 kB
-      networks in total      2.9 MB
+      networks in total      2.93 MB
       shuffle windows        33.8 MB
       total                  36.7 MB
 
@@ -195,7 +196,7 @@ prints both figures for a shape before you run anything:
     The --stream cache is a temporary file of 108 bytes a row, removed on exit.
 
 A row costs `(terms + 1) * 8 + 8` bytes held, so the crossover is around 200,000 rows at two terms
-and 35,000 at twenty-four. If the store does not fit, the fit says what it was holding and names the
+and 170,000 at twenty-four. If the store does not fit, the fit says what it was holding and names the
 flag rather than printing `out of memory`; and once the store passes 64 MB the report prints what it
 cost, since that is the figure that decides whether the next file will fit.
 
@@ -240,11 +241,12 @@ model learned this table rather than the relation behind it.
       the spread over refits is 34% of the error itself, so a single fit
       of this configuration does not pin down its quality.
 
-**When it stops.** `-e` is a ceiling, not a count. The fit checks its error every 25 epochs on rows
-kept back for that purpose, keeps the weights from the best check, and gives up after `--patience`
-checks with no improvement. The `epochs` column says how many it used. On `example/nonlinear.csv`
-that is 225 and 250 out of 3000, the fit takes 0.20 s instead of 1.51 s, and the held-out error is
-*lower*: 1.11 and 1.13, against 1.15 and 1.26 for the full 3000. The extra epochs were overfitting.
+**When it stops.** `-e` is a ceiling, not a count. The fit checks its error after every epoch on
+rows kept back for that purpose, keeps the weights from the best check, and gives up after
+`--patience` epochs with no improvement. The `epochs` column reports the epoch whose weights were
+kept, not the epoch the run gave up at. On `example/nonlinear.csv` that is 80 and 9 out of 3000,
+and the fit takes 0.07 s instead of 1.59 s. The held-out error is no worse for it: 1.135 and
+1.2135, against 1.1817 and 1.2141 for the full 3000.
 
 The rows that decide when to stop are not the rows the error is reported on. Choosing a stopping
 point by a number makes that number optimistic by however much was selected for, so the held-out
@@ -265,7 +267,7 @@ program can check it, because scaling an input needs the range it was trained on
 stored in the model. Outside the range the units saturate and the prediction goes flat:
 
     $ ./bpnn -c model.txt 001 dose=25 age=60
-    the case: held-out RMSE at fit time 1.12591, spread over refits 0.0464764
+    the case: held-out RMSE at fit time 1.13502, spread over refits 0.0460124
     the case: dose=25 is outside the fitted range [0.0118, 9.9804], by 1.51 of it
     the case: a network does not extrapolate; past its range the units saturate
     001,22.7231
@@ -319,10 +321,10 @@ a 4-core i7-1165G7; RMSE, lower is better.
 
 | data | best possible | linearr | linearr's verdict | bpnn held-out |
 |---|---|---|---|---|
-| exactly linear, no noise | 0 | **0** | no complaint | 4.51 |
-| y = x² + 10, no noise | 0 | 13.49 | wrong shape, term named | **0.96** |
-| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.26 |
-| y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.23 |
+| exactly linear, no noise | 0 | **0** | no complaint | 4.18 |
+| y = x² + 10, no noise | 0 | 13.49 | wrong shape, term named | **0.98** |
+| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.21 |
+| y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.46 |
 
 Then the comparison a network is usually not put through: the same line, with the one extra column
 its own diagnostic asked for. Still closed form, still exact, still readable coefficients.
@@ -380,7 +382,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make            build ./bpnn and ./bpnn_worker
     make check      ut + cliut: what must pass before a commit
     make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
-    make cliut      140 black-box checks: the built binary, through a shell
+    make cliut      165 black-box checks: the built binary, through a shell
     make ut-asan    both suites under AddressSanitizer
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean

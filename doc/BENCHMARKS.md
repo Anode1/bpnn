@@ -20,8 +20,8 @@ memory. Two terms, four groups, `-e 2`:
 
     $ scripts/scale.sh 100000
                                             100000 rows 1000000 rows
-    --stream, peak RSS (kB)                        8704         8576
-    default, peak RSS (kB)                         7620        56772
+    --stream, peak RSS (kB)                        8832         8832
+    default, peak RSS (kB)                         6088        39308
 
 The default path holds every row and grows with them. `--stream` does not.
 
@@ -37,7 +37,7 @@ times larger than the memory used to fit it.
 
 **`--stream` is not free.** It pays for one shuffle window per refit whatever the file size, so
 below the crossover it costs *more* than holding the rows. A row costs `(terms + 1) * 8 + 8`
-bytes held, so the crossover is around 200,000 rows at two terms and 35,000 at twenty-four.
+bytes held, so the crossover is around 200,000 rows at two terms and 170,000 at twenty-four.
 `./bpnn --footprint TERMS GROUPS` prints both figures for a shape before you commit to one.
 
 ## Fitting rate
@@ -74,11 +74,11 @@ Scoring is a different shape of program: one model read, then a forward pass per
 | | |
 |---|---|
 | 200,000 cases from a pipe | 0.12 s, 2.4 MB peak |
-| one case, whole process | 1.8 ms, model read included |
+| one case, whole process | 0.4 ms, model read included |
 
-**1.7 million cases a second** through the pipe. The per-invocation figure is the one that
-matters if you call the binary once per prediction, and the difference between the two is the
-argument for not doing that.
+**1.7 million cases a second** through the pipe, against 2,500 a second one process at a time. The
+difference is the argument for the pipe. Neither figure comes from `bench/throughput.sh`, whose
+timer has 10 ms resolution and no pipe case; both were taken by hand and should be.
 
 ## The comparison against linearr
 
@@ -89,10 +89,10 @@ run. About 20 seconds.
 
 | data | best possible | linearr | linearr's verdict | bpnn held-out |
 |---|---|---|---|---|
-| exactly linear, no noise | 0 | **0** | no complaint | 4.51 |
-| y = x² + 10, no noise | 0 | 13.49 | wrong shape, term named | **0.96** |
-| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.26 |
-| y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.23 |
+| exactly linear, no noise | 0 | **0** | no complaint | 4.18 |
+| y = x² + 10, no noise | 0 | 13.49 | wrong shape, term named | **0.98** |
+| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.21 |
+| y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.46 |
 
 And the option a network is usually not measured against: the same line with the one extra
 column its own diagnostic asked for:
