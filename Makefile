@@ -16,12 +16,21 @@ LDLIBS  = -lm
 
 ENGINE  = rng.o act.o net.o train.o arena.o data.o conv2f.o ckpt.o
 PROG    = bpnn
+WORKER  = bpnn_worker
 
 .PHONY: all ut ut-asan ut-ubsan pedantic tools clean
 
-all: $(PROG)
+all: $(PROG) $(WORKER)
 
-$(PROG): main.o $(ENGINE)
+# bpnn: the tabular predictor. Reads linearr's CSV, fits one network per group, writes a
+# model, scores a case against it. This is the program the README is about.
+$(PROG): bpnn.o $(ENGINE)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+# bpnn_worker: the older single-topology worker (main.c). It trains one named topology and
+# prints a machine-readable RESULT line, which is what the removed search used to consume.
+# Kept because the XOR demonstration and the checkpoint paths go through it.
+$(WORKER): main.o $(ENGINE)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 %.o: %.c
@@ -43,7 +52,7 @@ ut-ubsan:
 	  -o bpnn_ut_ubsan tests.c $(ENGINE:.o=.c) $(LDLIBS) && ./bpnn_ut_ubsan
 pedantic:
 	$(CC) $(STD) -pedantic $(WARN) -Wextra -Wshadow -Wconversion -O2 -fsyntax-only \
-	  $(ENGINE:.o=.c) main.c
+	  $(ENGINE:.o=.c) main.c bpnn.c
 
 # ---- measurement tools -----------------------------------------------------
 # pairstat is the paired-statistics tool: Wilcoxon signed-rank (exact where ties permit),

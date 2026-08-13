@@ -1,22 +1,61 @@
 # bpnn
 
-**A backpropagation feed-forward neural network in C99, and tools for measuring how much of a
-neural-network experiment's reported result is real.**
+**A backpropagation feed-forward neural network in C99, and a tabular predictor built on it for the
+cases where a straight line is the wrong shape.**
 
 ## The goal
 
-Papers report that one architecture, one hyper-parameter setting, or one training recipe beats another
-by a fraction of a percentage point. Training is random, so any single measurement is the thing's real
-quality plus a draw of noise, and choosing the best of several such measurements keeps the noise along
-with the quality. This project measures how much of a reported improvement survives replication, on
-data where the question can actually be settled.
+`linearr` fits straight lines, in closed form, and checks whether the residuals it leaves still depend
+on a term. When they do, a line is the wrong shape, and linearr says so and stops, because a line is
+all it has. `bpnn` is the program you run next: the same CSV layout, the same per-group fitting, the
+same fit-then-score split, and a network in place of the line.
 
-The first measurement is done and it is blunt. On NAS-Bench-101, judging which of two architectures is
-better from one training run each is **backwards 42% of the time** when the observed difference is 0.1
-to 0.2 percentage points. Turned into what it implies: **a single training run per architecture can
-only establish differences larger than 2.5 percentage points**, and establishing a 0.1 point difference
-would take roughly 650 runs per architecture. Architecture-search papers routinely report CIFAR-10
-improvements of 0.1 to 0.3 points from single runs. See `doc/FINDINGS.md`.
+The two are meant to be used together, and `scripts/escalate.sh` is that pipeline. Fit the line first,
+and escalate only when the line's own diagnostic says the shape is wrong; reaching for a network
+without that evidence is not a modelling decision.
+
+    ./bpnn -t data.csv > model.txt      fit one network per group
+    ./bpnn -c model.txt A x=3           score one case
+    scripts/escalate.sh data.csv        line first, network only if the line is the wrong shape
+    bench/compare.sh                    the measured comparison, against a known noise floor
+
+### What the comparison actually shows
+
+`bench/compare.sh` puts both programs on four files whose true relation is written down and whose noise
+floor is therefore known, so neither program is graded on a curve. Every number below comes from that
+script; RMSE, lower is better.
+
+| data | best possible | linearr | linearr's verdict | bpnn held-out |
+|---|---|---|---|---|
+| exactly linear, no noise | 0 | **0** | no complaint | 4.51 |
+| y = x² + 10, no noise | 0 | 13.49 | wrong shape, term named | **0.96** |
+| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.26 |
+| y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.44 |
+
+And then the option a network is usually not measured against: the same line, with the one extra column
+its own diagnostic asked for. Still closed form, still exact, still readable coefficients.
+
+| line, plus the extra column | best possible | resid SD |
+|---|---|---|
+| + dose² (the check named dose) | 1.0 | 1.20 |
+| + x₁·x₂ (the check could not name the pair) | 1.0 | **1.02** |
+
+So the network never won this table outright. A correctly specified line reaches the noise floor, gets
+there in closed form with no seed and no spread, and hands you coefficients you can give to somebody.
+What the network buys is not accuracy. It is **not having to guess which column to add**, and that
+guess is cheap exactly when the diagnostic names the term for you. It stops being cheap when the check
+can only say that some pair interacts, because the candidates then number p(p−1)/2: one pair at two
+terms, 276 at twenty-four. That gap is where a network earns its place, and it is a narrower place than
+the usual framing suggests.
+
+### The measurement direction is closed
+
+An earlier goal of this fork was measuring how much of a reported architecture improvement survives
+replication. That direction is closed and produced no publishable finding: its headline numbers were
+either prior art or inflated. `doc/CLOSED.md` records every claim and what became of it, so that none
+of them gets revived from memory. The tooling it left behind is still here and still useful: `resolve`
+(is this comparison real, and how many runs would make it real), `pairstat` (paired tests behind a
+self-test gate), and the per-seed extractors for both NAS benchmarks.
 
 ## The network
 
