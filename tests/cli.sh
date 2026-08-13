@@ -45,7 +45,7 @@ out=$("$bin" --help); rc=$?
 set -e
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "13"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "14"
 
 set +e
 out=$("$bin" --selftest); rc=$?
@@ -520,6 +520,28 @@ check "a saturated prediction says so" \
       "$("$bin" -c "$tmp/sat.txt" A x=400 2>&1 >/dev/null | grep -c 'saturated')" "1"
 check "and an ordinary one does not" \
       "$("$bin" -c "$tmp/sat.txt" A x=20 2>&1 >/dev/null | grep -c 'saturated' || true)" "0"
+
+# --------------------------------------------------------------- --per-refit
+# Two runs are comparable as matched pairs only if they drew from the same seed lattice, and
+# pairstat refuses them when they did not. Skipped when the tool has not been built.
+
+if [ -x "$root/pairstat" ]; then
+    "$bin" -t "$tmp/ok.csv" -e 100 -s 3 -H 4 --per-refit "$tmp/a.refits" >/dev/null 2>&1
+    "$bin" -t "$tmp/ok.csv" -e 100 -s 3 -H 8 --per-refit "$tmp/b.refits" >/dev/null 2>&1
+    "$bin" -t "$tmp/ok.csv" -e 100 -s 5 -H 8 --per-refit "$tmp/c.refits" >/dev/null 2>&1
+    check "--per-refit writes one line per refit" \
+          "$(grep -c '^REFIT ' "$tmp/a.refits")" "3"
+    check "and stamps the seed lattice" \
+          "$(grep -c '^PAIRING ' "$tmp/a.refits")" "1"
+    check "matched runs compare" \
+          "$("$root/pairstat" --paired "$tmp/a.refits" "$tmp/b.refits" 2>&1 | grep -c 'held-out')" "2"
+    set +e
+    out=$("$root/pairstat" --paired "$tmp/a.refits" "$tmp/c.refits" 2>&1 >/dev/null); rc=$?
+    set -e
+    check "runs from different lattices are refused" \
+          "$(firstline "$out")" "pairstat: these two runs are not paired and cannot be compared as if"
+    check "and the refusal exits nonzero" "$rc" "2"
+fi
 
 # ------------------------------------------------------------------------ end
 

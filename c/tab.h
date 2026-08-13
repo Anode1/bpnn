@@ -63,6 +63,7 @@ extern long   hidden, epochs, nseed, patience, minrows, bufrows;
 extern double rate, momentum, holdout, decay;
 extern int    activation, streaming;
 extern const char *cachepath;
+extern const char *refitpath;   /* --per-refit: where the per-refit errors are written */
 extern const char *inpath;      /* what a message names; set when a file is opened */
 
 long   group_of(const char *name);
@@ -100,7 +101,10 @@ void net_copy_weights(Net *dst, const Net *src);
 int  fit_stream(const char *path);  /* stream.c */
 void write_model(void);         /* model.c  */
 int  read_model(const char *path);
-void report(void);              /* report.c */
+void refit_open(void);          /* report.c */
+void refit_group(const Group *g, const double *held, const long *ran);
+void refit_close(void);
+void report(void);
 int  footprint(long terms, long groups);
 
 #endif /* BPNN_TAB_H */

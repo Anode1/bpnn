@@ -5,21 +5,15 @@ at a time. It is the companion to [linearr](https://github.com/Anode1/linearr): 
 per-group fitting, same fit-then-score split, a network where a line is the wrong shape. It is a fork
 of [SMBPANN](https://github.com/Anode1/SMBPANN) with the evolutionary search removed.
 
-## What this project is now
+## What this project is
 
-A tool, not a research programme. The measurement direction that justified the fork is closed and
-`doc/CLOSED.md` records why; what is left is an engine that was never in doubt, a unit suite, and two
-self-testing statistics tools. The work from here is engineering: guards, tests, real data, and a
-memory bound that holds on files larger than memory.
+A tool, not a research programme. Forked from
+[SMBPANN](https://github.com/Anode1/SMBPANN), which is untouched and stays that way.
 
-The bar it is being built to is the job linearr was built from -- a length-of-stay predictor deployed
-across hospitals in 2011, where a network was offered as an option and a regression was chosen. That
-is the shape of problem this must handle without apology: tens of terms, hundreds of groups, rows
-beyond memory, an answer that has to be reproducible digit for digit.
-
-**SMBPANN itself is untouched and must stay that way.** The paper under review cites it as the
-reference implementation and its appendix tells referees how to regenerate every experiment from that
-tree. Nothing here removes or renames anything that tree depends on; this is a copy.
+The bar it is built to is the job linearr came from: a length-of-stay predictor deployed across
+hospitals in 2011, where a network was offered as an option and a regression was chosen. That is
+the shape of problem this must handle without apology -- tens of terms, hundreds of groups, rows
+beyond memory, and an answer reproducible digit for digit.
 
 ## The contract (read first)
 
@@ -87,10 +81,7 @@ at the root.
     tests/cli.sh    black-box: usage, exit codes, every refusal, and the numeric invariances
 
     validation/resolve.c       is a comparison real, how many runs would make it real, what ceiling
-    validation/pairstat.c      paired statistics with named tests -- see below
-    validation/nb101_trials.c  NAS-Bench-101 tfrecord -> text, KEEPING the three training runs
-    validation/nb201_extract.c the same for NAS-Bench-201's converted release
-    validation/PROVENANCE_nas.md  where the benchmark data comes from and how to regenerate it
+    validation/pairstat.c      paired statistics with named tests; --paired reads --per-refit files
 
 ## The statistics tool
 

@@ -189,6 +189,7 @@ int fit_group(Group *g)
     g->held_rmse = held[med];
     g->nseed = nseed;
     g->epochs_ran = ran[med];
+    refit_group(g, held, ran);
     /* The denominator of the variance explained has to be the spread of the same rows the
      * numerator was measured on. Over all the group's rows instead, one extreme value inflates
      * it and the ratio certifies a destroyed fit as perfect. */

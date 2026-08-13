@@ -429,6 +429,51 @@ static int selftest(void)
 
 /* ---------------------------------------------------------------- main */
 
+/* bpnn --per-refit files. Each holds one line per group per refit plus a PAIRING stamp naming
+ * the seed lattice both arms drew from. Two files are comparable as matched pairs only if those
+ * stamps agree: refit s of one arm and refit s of the other must have seen the same split and
+ * the same starting weights. A paired test on unpaired runs reports a precision that is not
+ * there, so a mismatch is refused rather than warned about. */
+typedef struct {
+    char   stamp[256];
+    char   gname[MAXGROUPS][64];
+    double held[MAXGROUPS][MAXPAIRS];
+    int    nheld[MAXGROUPS];
+    int    ngroups;
+} Refits;
+
+static int refits_read(const char *path, Refits *r)
+{
+    char line[LINEMAX];
+    FILE *f = fopen(path, "r");
+    if(!f){ fprintf(stderr,"pairstat: cannot open %s\n", path); return -1; }
+    memset(r, 0, sizeof *r);
+    while(fgets(line,sizeof line,f)){
+        if(!strncmp(line,"PAIRING ",8)){
+            size_t n = strlen(line);
+            while(n && (line[n-1]=='\n'||line[n-1]=='\r')) line[--n]=0;
+            snprintf(r->stamp, sizeof r->stamp, "%.255s", line+8);
+            continue;
+        }
+        if(strncmp(line,"REFIT ",6)) continue;
+        {   char g[64]; long s; double held, train; long ep; int i, gi=-1;
+            if(sscanf(line+6,"%63s %ld %lf %lf %ld",g,&s,&held,&train,&ep) < 3) continue;
+            for(i=0;i<r->ngroups;i++) if(!strcmp(r->gname[i],g)){ gi=i; break; }
+            if(gi<0){
+                if(r->ngroups>=MAXGROUPS){ fclose(f); fprintf(stderr,"pairstat: too many groups in %s\n",path); return -1; }
+                gi=r->ngroups++;
+                snprintf(r->gname[gi], sizeof r->gname[gi], "%s", g);
+            }
+            if(r->nheld[gi]>=MAXPAIRS){ fclose(f); fprintf(stderr,"pairstat: too many refits in %s\n",path); return -1; }
+            r->held[gi][r->nheld[gi]++] = held;
+        }
+    }
+    fclose(f);
+    if(r->ngroups==0){ fprintf(stderr,"pairstat: %s holds no REFIT lines\n", path); return -1; }
+    if(!r->stamp[0]){ fprintf(stderr,"pairstat: %s has no PAIRING line, so it cannot be paired\n", path); return -1; }
+    return 0;
+}
+
 int main(int argc,char**argv)
 {
     static double diff[MAXGROUPS][MAXMETRICS][MAXPAIRS];
@@ -442,8 +487,12 @@ int main(int argc,char**argv)
     double alpha, power, margin;
     int    drop_zero, binary;
 
+    static Refits ra, rb;
+    const char *pair_a = NULL, *pair_b = NULL;
+
     for(i=1;i<argc;i++)
         if(!strcmp(argv[i],"--selftest")) return selftest();
+        else if(!strcmp(argv[i],"--paired") && i+2 < argc){ pair_a=argv[i+1]; pair_b=argv[i+2]; i+=2; }
         else if(!strcmp(argv[i],"-h")||!strcmp(argv[i],"--help")){
             printf("usage: <per-seed lines> | ./pairstat        (env-configured)\n");
             printf("  PREFIX   only use lines whose first token is this (default RAW; empty = all)\n");
@@ -453,6 +502,7 @@ int main(int argc,char**argv)
             printf("  POWER    power used for the MDE (default 0.8)\n");
             printf("  MARGIN   TOST equivalence margin, 0 = skip (default 0)\n");
             printf("  ZERO     1 = drop zero differences (Wilcoxon, default), 0 = keep them\n");
+            printf("  --paired A B two bpnn --per-refit files, compared on matched refits\n");
             printf("  --selftest   check the tests against hand-computable cases and exit\n");
             return 0;
         }
@@ -484,6 +534,38 @@ int main(int argc,char**argv)
 
     for(g=0;g<MAXGROUPS;g++) for(m=0;m<MAXMETRICS;m++) ndiff[g][m]=0;
 
+    if(pair_a){
+        int gi, si;
+        if(refits_read(pair_a,&ra) != 0 || refits_read(pair_b,&rb) != 0) return 2;
+        if(strcmp(ra.stamp, rb.stamp)){
+            fprintf(stderr,"pairstat: these two runs are not paired and cannot be compared as if\n"
+                           "they were. %s says\n  %s\nand %s says\n  %s\n"
+                           "Refit s of each arm must have drawn the same split and the same\n"
+                           "starting weights; re-run both with the same -s, --holdout and\n"
+                           "--patience.\n", pair_a, ra.stamp, pair_b, rb.stamp);
+            return 2;
+        }
+        nmetrics = 1;
+        snprintf(mname[0], sizeof mname[0], "held-out");
+        for(gi=0; gi<ra.ngroups; gi++){
+            int bi=-1, n;
+            for(si=0; si<rb.ngroups; si++) if(!strcmp(ra.gname[gi], rb.gname[si])) bi=si;
+            if(bi<0){ fprintf(stderr,"pairstat: group %s is in %s and not in %s\n",
+                              ra.gname[gi], pair_a, pair_b); return 2; }
+            n = ra.nheld[gi] < rb.nheld[bi] ? ra.nheld[gi] : rb.nheld[bi];
+            if(ra.nheld[gi] != rb.nheld[bi]){
+                fprintf(stderr,"pairstat: group %s has %d refits in %s and %d in %s\n",
+                        ra.gname[gi], ra.nheld[gi], pair_a, rb.nheld[bi], pair_b);
+                return 2;
+            }
+            if(ngroups>=MAXGROUPS) break;
+            g = ngroups++;
+            gkey[g] = atof(ra.gname[gi]);
+            for(si=0; si<n; si++) diff[g][0][si] = ra.held[gi][si] - rb.held[bi][si];
+            ndiff[g][0] = n;
+        }
+        goto analyse;
+    }
     while(fgets(line,sizeof(line),stdin)){
         char *tokv[MAXCOLS]; int ntok=0;
         char *p=strtok(line," \t\n\r");
@@ -501,6 +583,7 @@ int main(int argc,char**argv)
           } }
     }
 
+analyse:
     if(ngroups==0){ fprintf(stderr,"pairstat: no input lines matched PREFIX='%s'\n",prefix); return 2; }
     if(over) fprintf(stderr,"pairstat: WARNING more than %d pairs in a cell; extra pairs IGNORED\n",MAXPAIRS);
 

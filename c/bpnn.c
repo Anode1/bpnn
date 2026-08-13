@@ -298,6 +298,8 @@ static void usage(void)
     printf("              file, then one per epoch over a cache. Different training\n");
     printf("              order, so different numbers from the default path.\n");
     printf("  --buffer N  rows in the shuffle window under --stream (default %ld)\n", bufrows);
+    printf("  --per-refit F  write each refit's held-out error to F, so two runs can be\n");
+    printf("              compared as matched pairs: pairstat --paired A F\n");
     printf("  --cache F   keep --stream's scaled rows in F, so a later run of any shape\n");
     printf("              skips both passes over the CSV. Rebuilt when the input's size\n");
     printf("              or modification time changes.\n");
@@ -391,6 +393,8 @@ int main(int argc, char **argv)
             decay = v;
         } else if (!strcmp(argv[i], "--stream")) {
             streaming = 1;
+        } else if (!strcmp(argv[i], "--per-refit")) {
+            if (optstr(argc, argv, &i, &refitpath) != 0) return 2;
         } else if (!strcmp(argv[i], "--cache")) {
             if (optstr(argc, argv, &i, &cachepath) != 0) return 2;
         } else if (!strcmp(argv[i], "--buffer")) {
@@ -461,6 +465,7 @@ int main(int argc, char **argv)
                         "nothing to cache.\n");
         return 2;
     }
+    refit_open();
     if (streaming) {
         if (fit_stream(path) != 0) { rc = 1; goto out; }
         write_model();
@@ -487,6 +492,7 @@ int main(int argc, char **argv)
     write_model();
     report();
 out:
+    refit_close();
     for (g = 0; g < ngroup; g++) if (gp[g].net) net_free(gp[g].net);
     free(xs); free(ys); free(rowgrp);
     return rc;

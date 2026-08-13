@@ -506,6 +506,7 @@ int fit_stream(const char *path)
         g->nheld = n_he[i * nseed + med];
         g->nseed = nseed;
         g->epochs_ran = ran[i * nseed + med] ? ran[i * nseed + med] : epochs;
+        refit_group(g, held, NULL);
         {   /* the spread of the reported rows, for the variance explained */
             double q = sse_he[i * nseed + med];
             (void)q;

@@ -87,10 +87,25 @@ init seed depend only on the refit index, so two configurations get the same spl
 starting weights. A paired comparison is available and is far more sensitive: measured on this
 tree, a paired 95% MDE of 0.026 where the printed floor was 0.248.
 
-**Use `validation/resolve.c` for a comparison you intend to act on.** It takes repeated scores
-for each candidate and answers whether the difference is real and how many runs would make it so,
-and it refuses to answer when given one run per candidate. `validation/pairstat.c` does the
-paired version properly.
+**Do the paired comparison instead.** Both runs draw their split and their starting weights from
+the refit index alone, so refit 3 of one configuration and refit 3 of another saw the same rows
+and the same initial weights. Comparing them pairwise cancels the noise they share:
+
+    $ ./bpnn -t data.csv -H 4 --per-refit h4.refits > /dev/null
+    $ ./bpnn -t data.csv -H 8 --per-refit h8.refits > /dev/null
+    $ ./pairstat --paired h4.refits h8.refits
+
+`pairstat` gives a Wilcoxon signed-rank test, a Hodges-Lehmann estimate with a distribution-free
+interval, a paired *t*, Holm correction across the groups, and a minimum detectable effect. On
+`example/nonlinear.csv` at five refits that MDE is 0.126 where the printed floor is 0.25, and it
+sharpens further with more refits: an outside reviewer measured 0.026 at twelve.
+
+The pairing holds only while both runs used the same `-s`, `--holdout` and `--patience`, so the
+per-refit file stamps those and `pairstat` refuses two files that disagree. A paired test on
+unpaired runs claims a precision that is not there, which is worse than the conservative floor.
+
+`validation/resolve.c` answers the other question: how many runs a difference of a given size
+would need, and it refuses to answer when given one run per candidate.
 
 ## expl
 

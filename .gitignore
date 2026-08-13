@@ -12,32 +12,6 @@ c/*.d
 # the measurement tools, one binary per validation/*.c
 /resolve
 /pairstat
-/nb101_trials
-/nb101_budget
-/nb101_flip
-/nb101_signal
-/nb101_extract
-/nb_ceiling
-/nb201_extract
-
-# -- fetched benchmark archives -------------------------------------------
-# Multi-gigabyte and re-fetchable; validation/PROVENANCE_nas.md has the URLs.
-/nasbench_only108.tfrecord
-/nasbench_full.tfrecord
-/nb201_objectives.npy
-/nb201_hyperparameters.parquet
-/nb201_metadata.json
-
-# -- tables derived from those archives ------------------------------------
-# Every one regenerates from the archive above by a command in PROVENANCE_nas.md
-# or by a rule in the Makefile.
-validation/nasbench101.txt
-validation/nasbench101_trials.txt
-validation/nasbench201.txt
-validation/nb101_triples.txt
-validation/nb101_b*.txt
-validation/nb201_t*.txt
-validation/e_t*.txt
 
 # -- run outputs -----------------------------------------------------------
 # Per-seed scratch, and the cell tables scripts/ rebuilds from it.
@@ -50,5 +24,3 @@ cells_corrected.txt
 *.linearr.csv
 example/mknonlinear
 
-# large audio dataset; re-fetch per data/fsdd/PROVENANCE.md
-data/fsdd/recordings/

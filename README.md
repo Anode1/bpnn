@@ -116,8 +116,9 @@ between two single fits, so a true difference exactly equal to it is found about
 computed from a spread estimated on 4 degrees of freedom at the default `-s 5`, which is itself
 uncertain by about a third; and the number printed beside it is a median over refits, not a single
 fit. Two configurations differing by less than the floor are not distinguished by this data. Two
-differing by more are worth a closer look, not a conclusion. `validation/resolve.c` does the closer
-look properly.
+differing by more are worth a closer look, not a conclusion. The paired comparison in
+[`doc/DIAGNOSTICS.md`](doc/DIAGNOSTICS.md) does the closer look properly, and is several times
+sharper than this scale.
 
 Scoring prints the fit-time error and the spread again on every prediction. A prediction given to four
 decimals, from a model whose own error is 1.11, would otherwise read as more precise than it is.
@@ -148,6 +149,7 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | `--stream` | | fit without holding the rows; see [Memory](#memory-and-files-larger-than-it) |
 | `--buffer N` | 65536 | rows in the shuffle window under `--stream` |
 | `--cache FILE` | | keep `--stream`'s scaled rows in FILE, so a later run skips both passes over the CSV |
+| `--per-refit FILE` | | write each refit's held-out error, for `pairstat --paired` |
 | `--footprint T G` | | what a fit of T terms and G groups costs in memory |
 | `--selftest` | | check the arithmetic and exit |
 
@@ -380,45 +382,33 @@ beats a small network.
 validates against NIST reference values to eleven; nothing here should be trusted past six. And the
 build ceilings are 64 terms and 512 groups, both fixed at compile time.
 
-## The measurement tools
+## The two tools beside it
 
-These are what a closed research direction (below) left behind. Each is one self-contained `.c` with
-no dependencies and no link to the engine.
+Both are self-contained `.c` files with no dependency on the engine, and both refuse to be
+trusted until their self-test passes. `make tools` runs both.
 
-**`validation/resolve.c`** answers three questions from repeated scores, and refuses to guess when
-given one run per candidate: is candidate 0 really better than the others, how many runs per candidate
-would resolve a difference of a given size, and what is the best rank correlation any predictor could
-score against labels this noisy.
+**`validation/pairstat.c`** is the one to reach for when comparing two configurations. Paired
+statistics with named tests: Wilcoxon signed-rank as primary, exact by dynamic programming where
+ties permit and tie-corrected normal otherwise, always reporting which it used; an exact sign
+test; Hodges-Lehmann estimates with distribution-free intervals; a paired *t* as secondary; Holm
+correction across a declared family; and a minimum detectable effect, so a null result is bounded
+rather than asserted.
 
-**`validation/pairstat.c`** is the most reusable of them. Paired statistics with named tests:
-Wilcoxon signed-rank as primary, exact by dynamic programming where ties permit and tie-corrected
-normal otherwise, always reporting which it used; an exact sign test; Hodges-Lehmann estimates with
-distribution-free intervals; a paired *t* as secondary; Holm correction across a declared family; and a
-minimum detectable effect, so a null result is bounded rather than asserted. Both tools are gated by a
-self-test against hand-computable cases and `make tools` runs it.
+`bpnn --per-refit FILE` writes each refit's held-out error, and `pairstat --paired A B` compares
+two such files on matched refits. That is worth doing rather than eyeballing the `floor`: both
+runs draw their split and their starting weights from the refit index alone, so the noise they
+share cancels, and the comparison is several times sharper than the unpaired scale the report
+prints. `pairstat` refuses two files whose pairing stamps disagree, because a paired test on
+unpaired runs claims a precision that is not there.
 
-**`validation/nb101_trials.c`** and **`validation/nb201_extract.c`** recover the per-run values from
-NAS-Bench-101 and NAS-Bench-201. Both benchmarks trained every architecture three times and both
-distributed tables average those runs away, which is the right table for ranking architectures and the
-wrong one for studying the noise. `validation/PROVENANCE_nas.md` has the URLs and the commands; the
-archives themselves are not in the repository.
-
-## The measurement direction is closed
-
-An earlier goal of this fork was measuring how much of a reported architecture improvement survives
-replication. It produced no publishable finding: the headline numbers were either prior art or
-inflated, and `doc/CLOSED.md` lists every claim and what became of it, so that none of them gets
-revived from a half-memory. Two numbers in particular are wrong wherever they still appear: the
-rank-correlation ceiling of 0.084 is 0.293, and the indifference class of 3,558 architectures is 26.
+**`validation/resolve.c`** answers three questions from repeated scores, and refuses to guess
+when given one run per candidate: is candidate 0 really better than the others, how many runs per
+candidate would resolve a difference of a given size, and what is the best rank correlation any
+predictor could score against labels this noisy.
 
 ## Origin
 
-Forked from [SMBPANN](https://github.com/Anode1/SMBPANN), which used an evolutionary search over
-topology to ask which pieces of a convolution a search recovers unaided. The engine, the unit suite and
-the statistics tooling carried over; the search did not, because on affordable problem sizes it was a
-weak hill-climber whose stalling confounded the measurements built on it, and on a public benchmark it
-lost to matched-budget random search. SMBPANN is untouched and remains the reference implementation
-for the paper that cites it.
+Forked from [SMBPANN](https://github.com/Anode1/SMBPANN), which is untouched and stays that way.
 
 ## The rest of it
 
@@ -427,11 +417,9 @@ for the paper that cites it.
 | `c/bpnn.c` | the header comment is the specification: the input format, the three failure modes and what each check computes |
 | `AGENTS.md` | the operating manual, and the specific mistakes this line has already paid for |
 | `doc/dev/STYLE.md` | the C ideology: one concept per file, stack-first, allocation at construction, single-exit cleanup |
-| `doc/CLOSED.md` | every claim the closed direction made, and what became of it |
 | [`doc/DIAGNOSTICS.md`](doc/DIAGNOSTICS.md) | what every reported number is, how far it can be trusted, and where it is known to be wrong |
 | [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) | every rate and footprint, the machine they came from, and the script that reproduces each |
 | `bench/compare.sh` | the comparison above, and why each of the four files is in it |
-| `validation/PROVENANCE_nas.md` | where the benchmark data comes from and the commands that regenerate it |
 
 ## See also
 

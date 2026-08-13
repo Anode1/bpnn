@@ -9,6 +9,44 @@
 
 #include "tab.h"
 
+/* --per-refit: one line per group per refit, so two runs can be compared as matched pairs
+ * rather than as two summaries. The seed line is the pairing stamp: both arms draw their split
+ * and their starting weights from the refit index alone, so refit s of one configuration and
+ * refit s of another see the same split and the same initial weights. pairstat refuses two
+ * files whose stamps differ, because a paired test on unpaired runs claims a precision that is
+ * not there. */
+static FILE *refitf;
+
+void refit_open(void)
+{
+    if (!refitpath) return;
+    refitf = fopen(refitpath, "w");
+    if (!refitf) {
+        fprintf(stderr, "bpnn: cannot write %s\n", refitpath);
+        return;
+    }
+    fprintf(refitf, "# bpnn per-refit held-out errors\n");
+    fprintf(refitf, "# pairstat --paired A B compares two of these on matched refits.\n");
+    fprintf(refitf, "PAIRING split=1000+7919s init=1+104729s refits=%ld holdout=%g patience=%ld\n",
+            nseed, holdout, patience);
+    fprintf(refitf, "# group refit held train epochs\n");
+}
+
+void refit_group(const Group *g, const double *held, const long *ran)
+{
+    long s;
+    if (!refitf) return;
+    for (s = 0; s < nseed; s++)
+        fprintf(refitf, "REFIT %s %ld %.9g %.9g %ld\n",
+                g->name, s, held[s], g->train_rmse, ran ? ran[s] : 0);
+}
+
+void refit_close(void)
+{
+    if (refitf) fclose(refitf);
+    refitf = NULL;
+}
+
 void report(void)
 {
     long i;

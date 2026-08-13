@@ -92,7 +92,7 @@ pedantic:
 # ---- the measurement tools -------------------------------------------------
 # One self-contained .c each, no engine dependency. Both self-tests run before the tools are
 # considered usable.
-TOOLS = resolve pairstat nb101_trials nb101_budget nb101_flip nb101_signal nb_ceiling nb201_extract
+TOOLS = resolve pairstat
 
 tools: $(TOOLS)
 	./resolve selftest
@@ -100,22 +100,6 @@ tools: $(TOOLS)
 
 $(TOOLS): %: validation/%.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
-
-# NAS-Bench-101's archive table carries the graph as well; the flip and ceiling probes need
-# only the three per-run accuracies, so project them rather than teaching each probe a
-# second format. The input is re-fetched per validation/PROVENANCE_nas.md.
-validation/nb101_triples.txt: validation/nasbench101_trials.txt
-	awk '!/^#/{n=$$1; b=2+n+1; print $$(b+1), $$(b+3), $$(b+5)}' $< > $@
-
-# The binary, and the example data it names in its own messages.
-install: $(PROG)
-	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/bpnn/example
-	cp $(PROG) $(DESTDIR)$(PREFIX)/bin/
-	cp example/*.csv $(DESTDIR)$(PREFIX)/share/bpnn/example/
-
-uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/$(PROG)
-	rm -rf $(DESTDIR)$(PREFIX)/share/bpnn
 
 clean:
 	rm -f c/*.o c/*.d $(PROG) $(WORKER) $(TOOLS) \
