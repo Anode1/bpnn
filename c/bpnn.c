@@ -86,7 +86,11 @@ static char   term[MAXTERM][NAMELEN];
 static char   response[NAMELEN];
 static long   nterm;
 
-/* the row store: rows are grouped together, so a group is a contiguous span */
+/* The row store: rows are grouped together, so a group is a contiguous span. The stride is the
+ * file's own term count, not MAXTERM: at the ceiling a two-term file paid 520 bytes a row for
+ * 16 bytes of data, and the row store is the whole of what the default path costs. */
+#define ROW(i)  (xs + (size_t)(i) * (size_t)nterm)
+
 static double *xs, *ys;
 static long   *rowgrp;
 static long    nrow, caprow;
@@ -135,12 +139,29 @@ static int grow(long want)
     if (want <= caprow) return 0;
     caprow = caprow ? caprow * 2 : 1024;
     while (caprow < want) caprow *= 2;
-    nx = realloc(xs, (size_t)caprow * MAXTERM * sizeof *xs);
+    nx = realloc(xs, (size_t)caprow * (size_t)nterm * sizeof *xs);
     ny = realloc(ys, (size_t)caprow * sizeof *ys);
     ng = realloc(rowgrp, (size_t)caprow * sizeof *ng);
     if (!nx || !ny || !ng) { xs = nx ? nx : xs; ys = ny ? ny : ys; rowgrp = ng ? ng : rowgrp; return -1; }
     xs = nx; ys = ny; rowgrp = ng;
     return 0;
+}
+
+/* Bytes a row costs the default path: the terms, the response, and the group index. */
+static double rowcost(void)
+{
+    return ((double)nterm + 1.0) * (double)sizeof(double) + (double)sizeof(long);
+}
+
+/* The row store is the whole of what the default path spends. When it runs out, say what was
+ * being held and name the option that does not hold it. */
+static void oom_rows(const char *doing)
+{
+    fprintf(stderr, "bpnn: out of memory %s: %ld rows at %.0f bytes each is %.3g GB.\n"
+                    "--stream fits the same model without holding the rows, and\n"
+                    "./bpnn --footprint %ld %ld prints both figures for this shape.\n",
+            doing, nrow, rowcost(), rowcost() * (double)nrow / 1073741824.0,
+            nterm, ngroup > 0 ? ngroup : 1);
 }
 
 /* A field that must be a finite number. WHAT names it for the message, LINE locates it.
@@ -298,8 +319,8 @@ static int read_csv(const char *path)
 
     if (reader_open(&rd, path) != 0) return -1;
     while ((r = reader_row(&rd, &g, &y, x)) == 1) {
-        if (grow(nrow + 1) != 0) { fprintf(stderr, "bpnn: out of memory\n"); r = -1; break; }
-        memcpy(xs + nrow * MAXTERM, x, (size_t)nterm * sizeof *xs);
+        if (grow(nrow + 1) != 0) { oom_rows("reading the file"); r = -1; break; }
+        memcpy(ROW(nrow), x, (size_t)nterm * sizeof *xs);
         ys[nrow] = y;
         rowgrp[nrow] = g;
         gp[g].n++;
@@ -312,14 +333,19 @@ static int read_csv(const char *path)
 /* Sort rows by group so each group is one contiguous span (insertion by counting). */
 static int regroup(void)
 {
-    double *nx = malloc((size_t)nrow * MAXTERM * sizeof *nx);
+    double *nx = malloc((size_t)nrow * (size_t)nterm * sizeof *nx);
     double *ny = malloc((size_t)nrow * sizeof *ny);
     long *at = malloc((size_t)ngroup * sizeof *at), i, run = 0;
-    if (!nx || !ny || !at) { free(nx); free(ny); free(at); return -1; }
+    /* This is the peak: the sort makes a second copy of the store before freeing the first. */
+    if (!nx || !ny || !at) {
+        free(nx); free(ny); free(at);
+        oom_rows("sorting the rows by group, which briefly needs a second copy of them");
+        return -1;
+    }
     for (i = 0; i < ngroup; i++) { gp[i].first = run; at[i] = run; run += gp[i].n; }
     for (i = 0; i < nrow; i++) {
         long d = at[rowgrp[i]]++;
-        memcpy(nx + d * MAXTERM, xs + i * MAXTERM, (size_t)nterm * sizeof *nx);
+        memcpy(nx + (size_t)d * (size_t)nterm, ROW(i), (size_t)nterm * sizeof *nx);
         ny[d] = ys[i];
     }
     free(xs); free(ys); free(at);
@@ -366,7 +392,7 @@ static void ranges(Group *g)
     long i;
     range_init(g);
     for (i = g->first; i < g->first + g->n; i++)
-        range_add(g, xs + i * MAXTERM, ys[i]);
+        range_add(g, ROW(i), ys[i]);
     range_done(g);
 }
 
@@ -426,7 +452,7 @@ static Net *train_one(Group *g, long *ord, long ntr, uint32_t seed)
         for (i = 0; i < ntr; i++) {
             smb_real xn[MAXTERM], d;
             long r = g->first + ord[i];
-            scale_in(g, xs + r * MAXTERM, xn);
+            scale_in(g, ROW(r), xn);
             d = scale_out(g, ys[r]);
             (void)trainer_learn(t, xn, &d);
         }
@@ -444,7 +470,7 @@ static double rmse(Group *g, Net *net, const long *ord, long a, long b)
         smb_real xn[MAXTERM];
         long r = g->first + ord[i];
         double p;
-        scale_in(g, xs + r * MAXTERM, xn);
+        scale_in(g, ROW(r), xn);
         p = unscale_out(g, (double)net_forward(net, xn)[0]);
         se += (p - ys[r]) * (p - ys[r]);
     }
@@ -690,6 +716,9 @@ static int fit_stream(const char *path)
     if (scan_ranges(path, &sorted_runs, &sorted_steps) != 0) return -1;
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); return -1; }
     rs = recsize();
+    /* A window larger than the file is a window the file cannot fill, and one window per refit is
+     * what --stream costs on a small file. The first pass has counted the rows, so cap it here. */
+    if (bufrows > nrow) bufrows = nrow;
 
     k = ngroup * nseed;
     nets   = calloc((size_t)k, sizeof *nets);
@@ -1033,6 +1062,13 @@ static void report(void)
                             "  of this configuration does not pin down its quality.\n",
                             100.0 * g->run_sd / g->held_rmse);
     }
+    /* What this fit cost to hold, once it is large enough to matter. The streaming path does not
+     * pay it, and the figure is the one that decides whether a larger file will fit at all. */
+    if (!streaming && rowcost() * (double)nrow >= 67108864.0)
+        fprintf(stderr, "\nthe row store held %ld rows at %.0f bytes each, %.3g GB, and the sort\n"
+                        "briefly needed a second copy. --stream fits the same model without\n"
+                        "holding the rows.\n",
+                nrow, rowcost(), rowcost() * (double)nrow / 1073741824.0);
 }
 
 static int selftest(void)
@@ -1077,7 +1113,7 @@ static int selftest(void)
         if (grow(13) != 0) { printf("selftest: out of memory\n"); return 1; }
         for (i = 0; i < 13; i++) {
             double x = (double)(i - 6);
-            xs[i * MAXTERM] = x; ys[i] = x * x + 10.0; ord[i] = i;
+            xs[i] = x; ys[i] = x * x + 10.0; ord[i] = i;      /* nterm is 1, so stride is 1 */
         }
         nrow = 13; p.first = 0; p.n = 13;
         ranges(&p);
@@ -1117,7 +1153,7 @@ static int footprint(long terms, long groups)
     nets    = per * (double)groups * (double)nseed + (double)sizeof(Group) * (double)groups;
     wins    = (double)bufrows * (double)nseed
               * (2.0 * (double)sizeof(int32_t) + ((double)terms + 1.0) * (double)sizeof(float));
-    rowbytes   = (double)(MAXTERM + 1) * (double)sizeof(double) + (double)sizeof(long);
+    rowbytes   = ((double)terms + 1.0) * (double)sizeof(double) + (double)sizeof(long);
     cachebytes = 2.0 * (double)sizeof(int32_t) + ((double)terms + 1.0) * (double)sizeof(float);
 
     printf("%ld terms, %ld groups, %ld hidden units, %ld refits\n\n",
@@ -1277,7 +1313,7 @@ int main(int argc, char **argv)
     }
     if (read_csv(path) != 0) { rc = 1; goto out; }
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
-    if (regroup() != 0) { fprintf(stderr, "bpnn: out of memory\n"); rc = 1; goto out; }
+    if (regroup() != 0) { rc = 1; goto out; }
     for (g = 0; g < ngroup; g++) {
         if (gp[g].n < 4) {
             fprintf(stderr, "bpnn: group %s has %ld rows; a network needs more than that to say\n"

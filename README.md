@@ -135,16 +135,18 @@ Least squares needs one pass because its objective has a fixed-size sufficient s
 Backpropagation has none: the gradient depends on the current weights, so every epoch has to see the
 rows again. Streaming removes the storage, not the passes.
 
-`scripts/scale.sh` measures it, fitting the same model over ten times the rows:
+`scripts/scale.sh` measures it, fitting the same model over ten times the rows (two terms, four
+groups):
 
-    $ scripts/scale.sh 50000
-                                             50000 rows  500000 rows
-    --stream, peak RSS (kB)                        7168         8704
-    default, peak RSS (kB)                        53376       513792
+    $ scripts/scale.sh 100000
+                                            100000 rows 1000000 rows
+    --stream, peak RSS (kB)                        8704         8576
+    default, peak RSS (kB)                         7620        56772
 
-The default path grows by ten. `--stream` grows by 1.5 MB, which is the shuffle window filling up:
-it holds `--buffer` rows and stops there. `--footprint TERMS GROUPS` prints the figures for a shape
-before you run anything:
+The default path grows with the rows. `--stream` does not. But note the left-hand column: at 100,000
+rows `--stream` costs *more*, because it pays for one shuffle window per refit whatever the file
+size. It is worth turning on when the row store stops fitting, not before. `--footprint TERMS GROUPS`
+prints both figures for a shape before you run anything:
 
     $ ./bpnn --footprint 24 400
     24 terms, 400 groups, 6 hidden units, 5 refits
@@ -156,9 +158,14 @@ before you run anything:
       total                  36.7 MB
 
     fitting without --stream, add the row store, which does take a row count:
-      per row                528 bytes
+      per row                208 bytes
 
     The --stream cache is a temporary file of 108 bytes a row, removed on exit.
+
+A row costs `(terms + 1) * 8 + 8` bytes held, so the crossover is around 200,000 rows at two terms
+and 35,000 at twenty-four. If the store does not fit, the fit says what it was holding and names the
+flag rather than printing `out of memory`; and once the store passes 64 MB the report prints what it
+cost, since that is the figure that decides whether the next file will fit.
 
 The two paths give different numbers, and neither is an approximation of the other. The default
 shuffles each group's rows completely every epoch. `--stream` shuffles through a window of `--buffer`

@@ -48,5 +48,7 @@ printf '%-38s %12s %12s\n' "default, peak RSS (kB)" \
        "$(peak ./bpnn -t "$TMP/big.csv"   -e 2)"
 
 echo
-echo "The --stream row should not move with the rows. The default row should scale with them:"
-echo "it holds every row at $(( (64 + 1) * 8 + 8 )) bytes, which ./bpnn --footprint prints."
+echo "The --stream row should not move with the rows. The default row scales with them, at"
+echo "(terms + 1) * 8 + 8 bytes a row; ./bpnn --footprint 2 4 prints the figure for this file."
+echo "--stream is not free either: it pays for one shuffle window per refit, whatever the"
+echo "file size, so on a small file it costs more than holding the rows does."

@@ -296,6 +296,12 @@ check "--footprint says what a row costs the default path" \
       "$("$bin" --footprint 24 400 | grep -c '^  per row ')" "1"
 check "--footprint names the group ceiling when it is passed" \
       "$("$bin" --footprint 24 400000 | grep -c 'this build fits at most 512 groups')" "1"
+# The row store packs to the file's own term count. It used to allocate the build ceiling of 64
+# terms for every row, so a two-term file paid 528 bytes a row to hold 16 bytes of data.
+check "a row costs the terms it has, not the ceiling" \
+      "$("$bin" --footprint 2 4 | awk '/per row/{print $3}')" "32"
+check "and twelve times the terms costs proportionally" \
+      "$("$bin" --footprint 24 4 | awk '/per row/{print $3}')" "208"
 set +e
 out=$("$bin" --footprint 24 0 2>&1 >/dev/null); rc=$?
 set -e
