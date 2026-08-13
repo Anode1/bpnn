@@ -28,7 +28,7 @@
  * clinical conclusion survives contact with them. They exist so that the two fitters can be
  * compared on a relation whose true shape is known.
  *
- *     cc -std=c99 -W -Wall -O2 -o mknonlinear mknonlinear.c ../rng.c -lm
+ *     cc -std=c99 -W -Wall -O2 -o mknonlinear mknonlinear.c ../c/rng.c -lm
  *     ./mknonlinear > nonlinear.csv
  *
  * Deterministic: same seed, same file, on any machine, which is the property that makes the bench
@@ -39,7 +39,7 @@
 #include <math.h>
 #include <string.h>
 
-#include "../rng.h"
+#include "../c/rng.h"
 
 #define NPER 400   /* rows per group */
 

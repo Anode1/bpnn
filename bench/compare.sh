@@ -17,7 +17,7 @@
 #
 #     bench/compare.sh
 #
-# Roughly a minute. Needs linearr; set LINEARR= if it is not at ~/linearr/linearr.
+# About 17 s on a 4-core i7-1165G7. Needs linearr; set LINEARR= if it is not at ~/linearr/linearr.
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -28,7 +28,7 @@ TMP=$(mktemp -d) || exit 2
 trap 'rm -rf "$TMP"' EXIT
 
 # regenerate the example files, so the bench never reports numbers from a stale table
-(cd example && cc -std=c99 -W -Wall -O2 -o mknonlinear mknonlinear.c ../rng.c -lm \
+(cd example && cc -std=c99 -W -Wall -O2 -o mknonlinear mknonlinear.c ../c/rng.c -lm \
   && ./mknonlinear > nonlinear.csv && ./mknonlinear --interaction > interaction.csv) || exit 2
 
 # worst resid SD over groups, from linearr's own --stats
