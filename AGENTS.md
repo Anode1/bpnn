@@ -196,9 +196,9 @@ What they raised that is NOT fixed, in the order it should be taken up:
    tool does not print. Worse, it throws away the pairing: the split and init seeds depend only
    on the refit index, so two configurations get identical splits and identical starting weights.
    A paired MDE measured 0.026 where the printed floor was 0.248, ten times too conservative.
-   `pairstat --paired` now does the paired version, but it treats the refits as independent when
-   they are splits of one table: the Nadeau-Bengio correction widens its interval by about a third
-   at five refits and is not applied.
+   `pairstat --paired` does the paired version and prints the Nadeau-Bengio correction beside the
+   naive interval. What remains: the signed-rank and sign tests, which are its primary ones, still
+   assume independent pairs and have no correction.
 3. **`--stream` still scales from every row**, since its cache is scaled once and shared across
    refits. The default path scales per refit from its own training rows. Fixing the streaming
    path means caching raw values and scaling per refit at training time, at roughly the cost of

@@ -111,10 +111,29 @@ groups, against printed floors of 0.112 and 0.443 -- sharper on one group and no
 this is not the uniform win an earlier draft of this file claimed. At twelve refits it measures
 0.054 and 0.047.
 
-Two cautions on those figures. `pairstat` treats the refits as independent when they are five
-splits of one table; the Nadeau-Bengio correction for that overlap widens the interval by about a
-third at five refits and three quarters at twelve, and no amount of refitting drives it to zero.
-And the interval is about *this table*, not about the configuration in general.
+`pairstat` prints two versions of the interval, because the naive one is wrong in a way worth
+seeing. The refits are five random splits of one table sharing 86% of their training rows, so
+their differences are correlated and `s/√k` understates the standard error. The `(NB)` columns
+apply Nadeau and Bengio's correction (*Inference for the Generalization Error*, Machine Learning
+52(3), 2003): `SEM = s·√(1/k + n_test/n_train)`, which at the default split is 1.35 times the
+naive figure at five refits and 1.73 times it at twelve.
+
+    grp  metric            MDE          SEM      MDE(NB)      SEM(NB)
+    1    held-out      0.12424      0.03342      0.16822      0.04525
+    2    held-out      0.13878      0.03733      0.18790      0.05055
+
+**The corrected interval does not shrink to zero with more refits.** It approaches
+`s·√(n_test/n_train)`, which is `0.41·s` at the default split. More refits measure the resampling
+noise better; they do not measure the difference better. That is the number to know before
+reaching for `-s 50`.
+
+Two limits on this. The correction is for a variance, so it applies to the paired *t* and to the
+MDE and has no accepted analogue for the signed-rank and sign tests, which are `pairstat`'s
+primary tests: those assume independent pairs, the same overlap violates it in the same
+direction, and their p-values are optimistic by an amount nothing here estimates. And the whole
+interval, corrected or not, describes *this table*. Six independent draws from one generating
+process gave Hodges-Lehmann differences between the same two configurations of 0.33 to 0.68:
+scatter as large as any single run's interval. Only more tables fix that.
 
 The pairing holds only while both runs used the same `-s`, `--holdout` and `--patience`, so the
 per-refit file stamps those and `pairstat` refuses two files that disagree. A paired test on

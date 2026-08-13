@@ -52,6 +52,7 @@
 #define MAXCOLS    32
 #define LINEMAX    1024
 
+static double g_overlap;             /* n_test/n_train for the Nadeau-Bengio correction */
 static double g_dp[WMAX+1];          /* exact signed-rank null, as probabilities */
 static double g_walsh[WMAX+1];       /* Walsh averages for Hodges-Lehmann */
 
@@ -166,7 +167,7 @@ typedef struct {
     int    grp;
     int    npairs;                /* all paired seeds: the estimator's n */
     int    n, nzero, win, tie, loss;  /* n = non-zero pairs: the rank test's n */
-    double mean, sd, sem;
+    double mean, sd, sem, sem_nb, mde_nb;
     double hl, hl_lo, hl_hi;
     double p_wsr, p_sign, p_t, p_holm;
     double mde, p_tost;
@@ -197,7 +198,7 @@ static void analyse_binary(const double *d,int n,double alpha,Result *R)
     R->p_sign= R->p_wsr;
     R->p_t   = -1.0;
     R->exact = 1;
-    R->sd=R->sem=0.0; R->mde=0.0; R->p_tost=-1.0;
+    R->sd=R->sem=0.0; R->mde=0.0; R->p_tost=-1.0; R->sem_nb=R->mde_nb=0.0;
     { int m=R->b+R->c;
       R->pi    = m? (double)R->b/m : 0.0;
       R->pi_lo = (m&&R->b>0)   ? betainv(alpha/2.0,(double)R->b,(double)(m-R->b+1)) : 0.0;
@@ -325,6 +326,13 @@ static void analyse(const double *d,int n0,double alpha,double power,double marg
         double ta=t_quantile(alpha/2.0,(double)(n0-1));
         double tb=t_quantile(1.0-power,(double)(n0-1));
         R->mde=(ta+tb)*R->sd/sqrt((double)n0);
+        /* The same figures with the train/test overlap accounted for. g_overlap is 0 unless the
+         * input said what the split was, in which case these stay 0 and are not printed. */
+        if(g_overlap > 0.0){
+            double f = sqrt(1.0/(double)n0 + g_overlap);
+            R->sem_nb = R->sd * f;
+            R->mde_nb = (ta+tb) * R->sd * f;
+        }
     }
 
     /* TOST: equivalent iff both one-sided tests reject at alpha */
@@ -423,6 +431,16 @@ static int selftest(void)
     ok &= approx(t_sf2(2.776445,4.0),0.05,1e-6,"t_sf2(2.776445, df=4)");
     ok &= approx(t_sf2(1.959964,1e7),0.05,1e-4,"t_sf2(1.959964, df->inf) ~ normal");
 
+    /* Nadeau-Bengio: at k=5 refits and n_test/n_train = 1/6, the correction multiplies the
+     * naive SEM by sqrt(1/5 + 1/6) / sqrt(1/5) = sqrt(11/30)/sqrt(1/5) = 1.3540064. Hand
+     * arithmetic, which is the only kind this file trusts. */
+    {
+        double naive = sqrt(1.0/5.0);
+        double corrected = sqrt(1.0/5.0 + 1.0/6.0);
+        ok &= approx(corrected/naive, 1.3540064, 1e-6, "Nadeau-Bengio factor, k=5, overlap 1/6");
+        /* And the ceiling it approaches: with k unbounded the factor is sqrt(1/6). */
+        ok &= approx(sqrt(1.0/6.0), 0.4082483, 1e-6, "the floor it approaches as k grows");
+    }
     printf("\n%s\n", ok?"self-test PASSED":"self-test FAILED");
     return ok?0:1;
 }
@@ -434,8 +452,26 @@ static int selftest(void)
  * stamps agree: refit s of one arm and refit s of the other must have seen the same split and
  * the same starting weights. A paired test on unpaired runs reports a precision that is not
  * there, so a mismatch is refused rather than warned about. */
+/* Nadeau & Bengio, "Inference for the Generalization Error", Machine Learning 52(3), 2003.
+ *
+ * k refits are k random splits of ONE table, so any two share most of their training rows and
+ * their differences are positively correlated. The variance of their mean is then approximately
+ * (1/k + n_test/n_train)*s^2, not s^2/k. Two consequences, and the second is the one that
+ * changes what anybody does: the interval is wider than the naive one by a factor that grows
+ * with k, and it does NOT go to zero as k grows -- it approaches s*sqrt(n_test/n_train). More
+ * refits buy a better estimate of the resampling noise, not a better estimate of the difference.
+ *
+ * The ratio is exact from the split fractions, which the stamp carries: with a stopping check
+ * the reported rows are holdout/2 of the table and the trained rows 1-holdout; without one the
+ * reported rows are the whole holdout.
+ *
+ * This corrects a variance, so it applies to the t and to the MDE. It has no accepted analogue
+ * for the signed-rank or the sign test, and none is invented here: those two assume independent
+ * pairs, the overlap violates that in the same direction, and their p-values are optimistic by
+ * an amount this tool does not estimate. */
 typedef struct {
     char   stamp[256];
+    double overlap;              /* n_test / n_train, or 0 when the stamp does not say */
     char   gname[MAXGROUPS][64];
     double held[MAXGROUPS][MAXPAIRS];
     int    nheld[MAXGROUPS];
@@ -451,8 +487,16 @@ static int refits_read(const char *path, Refits *r)
     while(fgets(line,sizeof line,f)){
         if(!strncmp(line,"PAIRING ",8)){
             size_t n = strlen(line);
+            char *h, *pa;
             while(n && (line[n-1]=='\n'||line[n-1]=='\r')) line[--n]=0;
             snprintf(r->stamp, sizeof r->stamp, "%.255s", line+8);
+            h  = strstr(line, "holdout=");
+            pa = strstr(line, "patience=");
+            if(h){
+                double ho = atof(h + 8);
+                double test = (pa && atof(pa + 9) > 0) ? ho / 2.0 : ho;
+                if(ho > 0 && ho < 1) r->overlap = test / (1.0 - ho);
+            }
             continue;
         }
         if(strncmp(line,"REFIT ",6)) continue;
@@ -545,6 +589,7 @@ int main(int argc,char**argv)
                            "--patience.\n", pair_a, ra.stamp, pair_b, rb.stamp);
             return 2;
         }
+        g_overlap = ra.overlap;
         nmetrics = 1;
         snprintf(mname[0], sizeof mname[0], "held-out");
         for(gi=0; gi<ra.ngroups; gi++){
@@ -673,11 +718,29 @@ analyse:
     printf("\n  ~ = tie-corrected normal approximation (|d| ties made the exact null invalid);\n");
     printf("    no suffix = EXACT signed-rank null by dynamic programming.\n");
     printf("  w/t/l counts ties as exact zero differences, which the test then drops.\n\n");
-    printf("%-4s %-8s %12s %12s %s\n","grp","metric","MDE","SEM","note");
+    if(g_overlap > 0.0)
+        printf("%-4s %-8s %12s %12s %12s %12s\n","grp","metric","MDE","SEM","MDE(NB)","SEM(NB)");
+    else
+        printf("%-4s %-8s %12s %12s %s\n","grp","metric","MDE","SEM","note");
     for(i=0;i<nres;i++){
         Result *R=&res[i];
-        printf("%-4d %-8s %12.5f %12.5f %s\n", R->grp,R->name,R->mde,R->sem,
-               (R->p_wsr>alpha) ? "null: effects below MDE were undetectable at this n" : "");
+        if(g_overlap > 0.0)
+            printf("%-4d %-8s %12.5f %12.5f %12.5f %12.5f\n",
+                   R->grp,R->name,R->mde,R->sem,R->mde_nb,R->sem_nb);
+        else
+            printf("%-4d %-8s %12.5f %12.5f %s\n", R->grp,R->name,R->mde,R->sem,
+                   (R->p_wsr>alpha) ? "null: effects below MDE were undetectable at this n" : "");
+
+    if(g_overlap > 0.0)
+        printf("\n  MDE/SEM treat the refits as independent. They are splits of one table sharing\n"
+               "  %.0f%% of their training rows, so (NB) applies Nadeau-Bengio: SEM = s*sqrt(1/k +\n"
+               "  n_test/n_train), n_test/n_train = %.3f here. That interval does NOT shrink to\n"
+               "  zero with more refits; it approaches s*%.3f. More refits measure the resampling\n"
+               "  noise better, not the difference.\n"
+               "  The signed-rank and sign tests above assume independent pairs, which the same\n"
+               "  overlap violates. No correction for that is applied or known, so read their\n"
+               "  p-values as optimistic by an amount this tool does not estimate.\n",
+               100.0 * (1.0 - g_overlap / (1.0 + g_overlap)), g_overlap, sqrt(g_overlap));
     }
     if(margin>0.0){
         printf("\nTOST against margin %+.4f (only valid if the margin was fixed BEFORE these runs):\n",margin);
