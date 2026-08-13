@@ -49,7 +49,8 @@ pedantic:
 # pairstat is the paired-statistics tool: Wilcoxon signed-rank (exact where ties permit),
 # exact sign test, Hodges-Lehmann with distribution-free intervals, paired t, Holm across a
 # declared family, and minimum detectable effect. It self-tests before it is trusted.
-tools: pairstat nb101_trials nb101_budget nb201_extract nb101_flip nb101_signal nb_ceiling validation/nb101_triples.txt
+tools: resolve pairstat nb101_trials nb101_budget nb201_extract nb101_flip nb101_signal nb_ceiling validation/nb101_triples.txt
+	./resolve selftest
 	./pairstat --selftest
 
 pairstat: validation/pairstat.c
@@ -75,4 +76,6 @@ nb201_extract: validation/nb201_extract.c
 nb_ceiling: validation/nb_ceiling.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 nb101_budget: validation/nb101_budget.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+resolve: validation/resolve.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
