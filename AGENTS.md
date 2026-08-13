@@ -1,21 +1,21 @@
 # AGENTS.md -- how to develop bpnn (for humans and AI agents)
 
-`bpnn` is a backpropagation feed-forward neural network in **C99**, and a set of tools for measuring
-how much of a neural-network experiment's reported result is real. It is a fork of
-[SMBPANN](https://github.com/Anode1/SMBPANN) with the evolutionary search removed.
+`bpnn` is a backpropagation feed-forward neural network in **C99**, fitted from a CSV and scored a case
+at a time. It is the companion to [linearr](https://github.com/Anode1/linearr): same file layout, same
+per-group fitting, same fit-then-score split, a network where a line is the wrong shape. It is a fork
+of [SMBPANN](https://github.com/Anode1/SMBPANN) with the evolutionary search removed.
 
-## Why this fork exists
+## What this project is now
 
-SMBPANN used an evolutionary search as an instrument for asking which pieces of a convolution a search
-recovers on its own. That line produced one published paper, one retracted draft, and a third result
-that survived three rounds of adversarial review only after shrinking considerably. The common factor
-in the failures was the search itself: on the spaces we could afford, the GA is a weak hill-climber
-that stalls, and nearly every measurement about it turned out to be confounded by that stalling rather
-than informative about anything else.
+A tool, not a research programme. The measurement direction that justified the fork is closed and
+`doc/CLOSED.md` records why; what is left is an engine that was never in doubt, a unit suite, and two
+self-testing statistics tools. The work from here is engineering: guards, tests, real data, and a
+memory bound that holds on files larger than memory.
 
-So the search is gone and the engine stays. What we keep is the part that was never in doubt: a
-gradient-checked trainer, a unit suite, and a statistics tool that self-tests before it reports a
-p-value.
+The bar it is being built to is the job linearr was built from -- a length-of-stay predictor deployed
+across hospitals in 2011, where a network was offered as an option and a regression was chosen. That
+is the shape of problem this must handle without apology: tens of terms, hundreds of groups, rows
+beyond memory, an answer that has to be reproducible digit for digit.
 
 **SMBPANN itself is untouched and must stay that way.** The paper under review cites it as the
 reference implementation and its appendix tells referees how to regenerate every experiment from that
@@ -26,43 +26,55 @@ tree. Nothing here removes or renames anything that tree depends on; this is a c
 - **`doc/dev/STYLE.md`** -- coding ideology, inherited unchanged: K&R/Robbins C99, one concept per
   `.c`/`.h`, stack-first, allocation only at construction, bounded strings, return codes, single-exit
   `goto` cleanup, sanitizer-gated. Non-negotiable.
-- **`net.h`, `train.h`, `arena.h`, `data.h`** -- the public API.
-- **The 1997 thesis** (`~/articles/BPFNN_Coursework`) -- the mathematics the engine executes; `net.c`
-  and `train.c` cite it by section.
+- **`README.md`** -- what the program promises: the two directions (fit and score), the CSV layout it
+  shares with linearr, the options, and the three failure modes it reports. Behaviour that contradicts
+  it is a defect in one of them.
+- **`c/bpnn.c`'s header comment** -- the specification of the tabular CLI: the input format, what each
+  reported number means, and why the shipped model is the median of the seeds and not the best.
+- **`c/net.h`, `c/train.h`, `c/arena.h`, `c/data.h`** -- the engine's public API.
+- **The 1997 thesis** (`~/articles/BPFNN_Coursework`) -- the mathematics the engine executes;
+  `c/net.c` and `c/train.c` cite it by section.
+
+Do not change behaviour without changing these first.
 
 ## Build and test
 
-    make            # build ./bpnn
+    make            # build ./bpnn and ./bpnn_worker
     make ut         # unit suite, 32 checks -- the commit gate
     make ut-asan    # under AddressSanitizer
     make ut-ubsan   # under UBSan
     make pedantic   # -pedantic plus -Wextra -Wshadow -Wconversion; must be clean
-    make tools      # pairstat, nb101_trials, nb101_signal; runs pairstat's self-test
+    make tools      # resolve, pairstat and the benchmark extractors; runs both self-tests
     make clean
 
 `make ut` is the commit gate. Run the sanitizers before committing. A warning is a defect.
 
 ## Module map
 
-    common.h        smb_real (=float), SMB_MAX_LAYERS, SMB_LINE_MAX
-    rng             deterministic xorshift PRNG. NOTE: 32-bit, period 2^32-1. Fine for a training
+Sources are in `c/`, the unit suite in `tests/`, the measurement tools in `validation/`. Binaries build
+at the root.
+
+    c/common.h      smb_real (=float), SMB_MAX_LAYERS, SMB_LINE_MAX
+    c/rng           deterministic xorshift PRNG. NOTE: 32-bit, period 2^32-1. Fine for a training
                     run; NOT fine for a study drawing more than ~4e9 numbers. A measurement that
                     exhausted this period silently reused draws and understated its own standard
                     error by 2.5x. If a study is that large, use a 64-bit generator and say so.
-    act             sigmoid, tanh, relu
-    net             flat weight matrices, forward pass, thesis init; dense and weight-shared conv1d
-    train           the generalized delta rule with momentum; conv layers share gradients across
+    c/act           sigmoid, tanh, relu
+    c/net           flat weight matrices, forward pass, thesis init; dense and weight-shared conv1d
+    c/train         the generalized delta rule with momentum; conv layers share gradients across
                     positions (gradient-checked against finite differences)
-    conv2f          a 2-D convolutional front-end, F filters of KxK with pooling
-    arena           marker/Mark-Release allocator
-    data            plain-text datasets, train/test split
-    ckpt            weight checkpoints
-    main.c          the CLI worker; trains a topology and prints a RESULT line
-    tests.c         -DUNIT_TEST unit suite: rng act net xor arena data conv1d conv2f
+    c/conv2f        a 2-D convolutional front-end, F filters of KxK with pooling
+    c/arena         marker/Mark-Release allocator
+    c/data          plain-text datasets, train/test split
+    c/ckpt          weight checkpoints
+    c/bpnn.c        the tabular CLI: linearr's CSV in, one network per group, a case scored
+    c/main.c        the older single-topology worker; prints a machine-readable RESULT line
+    tests/tests.c   -DUNIT_TEST unit suite: rng act net xor arena data conv1d conv2f
 
+    validation/resolve.c       is a comparison real, how many runs would make it real, what ceiling
     validation/pairstat.c      paired statistics with named tests -- see below
     validation/nb101_trials.c  NAS-Bench-101 tfrecord -> text, KEEPING the three training runs
-    validation/nb101_signal.c  selection inflation against search effort
+    validation/nb201_extract.c the same for NAS-Bench-201's converted release
     validation/PROVENANCE_nas.md  where the benchmark data comes from and how to regenerate it
 
 ## The statistics tool
@@ -104,11 +116,12 @@ These are not general advice. Each one cost real work in the predecessor.
 9. **Get an adversarial review from someone with no stake in the result**, and give one of them only
    the code and outputs without your conclusions. Two such reviews reversed conclusions here twice.
 
-## Storage for large experiments
+## The tree stays clean
 
-For experiments that need to cache millions of intermediate results, use **AIS** rather than inventing
-storage here. This repository stays a compute-and-measure tree; per-seed outputs live as
-`scratch_*.out` files and anything larger belongs in AIS.
+Nothing derived is committed: no binaries, no per-seed run outputs, no benchmark archives, no table a
+Makefile rule or a documented command rebuilds. `.gitignore` names each class and
+`validation/PROVENANCE_nas.md` holds the commands. For experiments that need to cache millions of
+intermediate results, use **AIS** rather than inventing storage here.
 
 ## Where the compute actually goes
 
@@ -121,13 +134,61 @@ compute-bound work; sizing a run as if it did overran one estimate by 40%.
 - Build the scaled trainer when an experiment demands shapes we do not have, and not before. A
   general N-dimensional tensor library with autodiff is a framework, and frameworks are for humans.
 
+## Memory: why linearr streams and what streaming means here
+
+linearr holds no rows because least squares has a fixed-size sufficient statistic: fold a row into the
+centered co-moments, forget it, solve once at the end. Backpropagation has no such statistic. The
+gradient depends on the current weights, so the data has to be visited once per epoch and no summary
+of it can stand in.
+
+**But "visited" is not "resident".** What backpropagation needs is a re-readable stream, not memory.
+The bound that is actually available here is *memory O(model), time O(epochs x rows)*, and that is the
+one to build to. It differs from linearr's promise and must be stated differently: linearr is one pass
+and O(1) in rows; this is E passes and O(1) in rows.
+
+Five things break if that is done naively, and each is a decision to write down rather than discover:
+
+1. **Scaling ranges need a first pass.** The network stores every term's range in order to scale it,
+   and that pass is exactly linearr's accumulator: min, max, mean, variance per term per group, O(p)
+   memory. It is also what the out-of-range guard at scoring time reads.
+2. **Shuffling.** SGD wants a fresh order each epoch, and a permutation of n rows costs 8n bytes: 8 GB
+   at a billion rows, which throws the bound away. The answer is a sliding shuffle buffer of B rows,
+   O(B) memory, with B written into the model file so a result reproduces. The failure mode to guard
+   is a file already sorted by the response or by group, where a small B shuffles nothing; that is
+   detectable in the first pass and should be a warning, not a silent bad fit.
+3. **The held-out split** must not consume the training PRNG. Assign it from a deterministic hash of
+   (group, row ordinal), so the split is identical whichever way the training draws move. Lesson 6
+   below is this same mistake in its earlier form.
+4. **Refits.** `-s` seeds must not mean S passes over the file. Hold S sets of weights, update all of
+   them from one row stream with a per-seed draw order, and the spread costs one pass. Whether the
+   held-out split is shared across seeds is a decision with consequences: sharing it isolates the
+   refit noise from split noise, which is what the reported spread claims to be.
+5. **Epochs stop being free.** Three thousand epochs over a billion rows is not a run anybody will
+   make. Past roughly a million rows the control has to become a budget plus early stopping on the
+   held-out error, and the parsing cost has to go: pack the CSV once into a fixed-width binary cache
+   and let each epoch be a sequential read of it.
+
+Per-group memory is bounded by the topology and the number of groups, never by rows, and the way to
+state that honestly is linearr's: a `--footprint` that prints the figure for a given shape rather than
+a sentence asking to be trusted. When G x model does not fit, fit the groups in K batches and pay K
+passes; that trade is fine as long as it is printed.
+
 ## Roadmap
 
-1. **Benchmark noise.** How much of a NAS benchmark's architecture ranking is training noise? The
-   per-seed tables are already extracted, so this is table lookups: how often the ranking of two
-   architectures flips between training seeds, what fraction of published-sized differences sit
-   inside single-run noise, and what that implies for any result reported from one training run.
-   Needs no search and no training, so nothing is confounded by an optimiser.
-2. Undecided, pending (1). The candidate with an audience is measuring how much of test-time
-   training's reported gain survives an honest held-out split, since its per-problem choices are
-   made on the same handful of examples it adapts on.
+The direction is a companion tool for linearr, up to the shape of the 2011 length-of-stay job. In
+order, because each step is the ground the next one stands on:
+
+1. **Guards and tests before anything else.** The reader currently accepts what it should refuse: a
+   non-numeric term reads as zero, a row with an unparseable response is skipped without a word, and
+   `nan` and `inf` parse and propagate. linearr refuses each of these naming the row and the term,
+   after three reviewers found exactly this class in it. Then the numeric cases its suite grew:
+   a term in dollars beside an indicator, an offset response, a constant column, a group with fewer
+   rows than the holdout needs, and the two ceilings (64 terms, 512 groups) hit from above.
+2. **A black-box suite.** `make ut` calls functions, never the binary, so exit codes, usage on a bare
+   invocation, and every refusal message are untested. linearr's `tests/cli.sh` is the model.
+3. **Streaming, per the section above**, behind the same CLI, with `--footprint` and a scale script
+   that proves peak memory does not move over a tenfold increase in rows.
+4. **Real data.** The 24-term length-of-stay shape from linearr's example data is the target; FSDD
+   (`data/fsdd/PROVENANCE.md`) is the non-tabular check the engine already has paths for.
+5. **A classifier**, which needs more than one output and a softmax with cross-entropy. Not before the
+   four above.
