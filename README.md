@@ -1,29 +1,36 @@
-# bpnn
+# bpnn: a neural network in C for the data a straight line gets wrong
 
-**A backpropagation feed-forward neural network in C99, and a tabular predictor built on it for the
-cases where a straight line is the wrong shape.**
+### It reports three of the ways a network misleads you, and it tells you when a line would have been the better buy
 
-## The goal
+A backpropagation feed-forward network as a command-line program. Reads a CSV and returns a fitted
+model; reads a case and returns a prediction.
 
-`linearr` fits straight lines, in closed form, and checks whether the residuals it leaves still depend
-on a term. When they do, a line is the wrong shape, and linearr says so and stops, because a line is
-all it has. `bpnn` is the program you run next: the same CSV layout, the same per-group fitting, the
-same fit-then-score split, and a network in place of the line.
+**This answers a question somebody asked in 2011 and nobody measured.** Fitting a least-squares
+length-of-stay predictor for industry, the author put it to the scientist he was working with that
+length of stay might not be linear, and offered a neural network instead of the usual repairs: log the
+response, bin the age, add a squared column. It was too early, and the idea went nowhere. The two
+programs now exist, so the comparison can be run. [What it showed](#what-the-comparison-shows).
 
-The two are meant to be used together, and `scripts/escalate.sh` is that pipeline. Fit the line first,
-and escalate only when the line's own diagnostic says the shape is wrong; reaching for a network
-without that evidence is not a modelling decision.
+## How it pairs with linearr
+
+[linearr](https://github.com/Anode1/linearr) fits straight lines in closed form, then checks whether
+the residuals it leaves still depend on a term. When they do, a line is the wrong shape, and linearr
+says so and stops, because a line is all it has. This is the program you run next. Same CSV layout,
+same per-group fitting, same fit-then-score split, a network in place of the line.
 
     ./bpnn -t data.csv > model.txt      fit one network per group
     ./bpnn -c model.txt A x=3           score one case
-    scripts/escalate.sh data.csv        line first, network only if the line is the wrong shape
+    scripts/escalate.sh data.csv        the line first, the network only if the line is wrong shape
     bench/compare.sh                    the measured comparison, against a known noise floor
 
-### What the comparison actually shows
+The order in that third line is the point. Fit the line first and escalate only when the line's own
+diagnostic says the shape is wrong. "We used a neural network" is not a modelling decision.
+
+## What the comparison shows
 
 `bench/compare.sh` puts both programs on four files whose true relation is written down and whose noise
-floor is therefore known, so neither program is graded on a curve. Every number below comes from that
-script; RMSE, lower is better.
+floor is therefore known in advance, so neither program is graded against the other's weaknesses. Every
+number below comes from that script. RMSE, lower is better.
 
 | data | best possible | linearr | linearr's verdict | bpnn held-out |
 |---|---|---|---|---|
