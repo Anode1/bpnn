@@ -427,6 +427,7 @@ for the paper that cites it.
 | `AGENTS.md` | the operating manual, and the specific mistakes this line has already paid for |
 | `doc/dev/STYLE.md` | the C ideology: one concept per file, stack-first, allocation at construction, single-exit cleanup |
 | `doc/CLOSED.md` | every claim the closed direction made, and what became of it |
+| [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) | every rate and footprint, the machine they came from, and the script that reproduces each |
 | `bench/compare.sh` | the comparison above, and why each of the four files is in it |
 | `validation/PROVENANCE_nas.md` | where the benchmark data comes from and the commands that regenerate it |
 
