@@ -1,6 +1,6 @@
 # bpnn: a neural network in C, for the data a straight line gets wrong
 
-### It reports three of the ways a network misleads you, and they are not the three a regression has
+### It warns when the fit has memorised the rows, when refitting moves the answer, and when a case falls outside the data
 
 A backpropagation feed-forward network as a command-line program. Reads a CSV and returns a fitted
 model; reads a case and returns a prediction. No dependencies beyond libm, and the same CSV layout
@@ -37,25 +37,23 @@ and linearr says so and stops, because a line is all it has. That warning is thi
     them. Least squares solves in closed form, so that answer is exact and has no seed;
     escalating anyway would trade those away and buy nothing this data can show.
 
-and it stops there, exit 0, having fitted no network. Give it data a line gets wrong and it escalates,
-exit 1, with both models on disk. The order is the point: the line is tried first because when it is
-right it is better in every way that matters, and the escalation is triggered by a measurement rather
-than by taste. "We used a neural network" is not a modelling decision.
+It stops there, exit 0, and fits no network. Given data a line gets wrong it escalates, exit 1, and
+leaves both models on disk. The line is tried first because a correct line is exact, has no seed and
+has readable coefficients, and the escalation happens on a measurement rather than on preference.
 
-One weakness of that script is worth knowing before you rely on it, and it is written into the source
-where the trigger is: linearr exits 0 whether or not the shape is wrong, so the escalation is a text
-match on the warning. If that wording ever changes, the script stops escalating and reports that a
-line was enough, which is the wrong answer given quietly. It therefore refuses to conclude anything
-when linearr printed no `fit:` summary at all. The fix belongs upstream, in a shape column or a
-distinct exit status.
+One weakness of the script, also written where the trigger is: linearr exits 0 whether or not the
+shape is wrong, so the escalation is a text match on the warning. If that wording changes, the script
+stops escalating and reports that a line was enough. That is the wrong answer, and it is not
+announced. The script therefore refuses to conclude anything when linearr printed no `fit:` summary
+at all. The fix belongs upstream, in a shape column or a distinct exit status.
 
 ## What backpropagation is
 
-**What it does.** A network of weighted sums with a squashing function between them, fitted by
-pushing the error at the output backwards through the layers and moving every weight against its own
-share of it. The method is Rumelhart, Hinton and Williams, 1986, and it is what fits a shape nobody
-wrote down in advance. The arithmetic here is a 1997 seminar thesis' tensor derivation of it, and
-`c/net.c` and `c/train.c` cite that thesis by section.
+**What it does.** A network of weighted sums with a squashing function between them. It is fitted by
+taking the error at the output, passing it back through the layers, and moving each weight by its own
+share of that error. The method is Rumelhart, Hinton and Williams, 1986. It fits a shape that was not
+written down in advance. The arithmetic here follows a 1997 seminar thesis' tensor derivation, cited
+by section in `c/net.c` and `c/train.c`.
 
 **What `c/train.c` is doing, basically.** With `a` the activations of a layer, `g'` the derivative of
 the squashing function and `d` the target, the whole of the generalized delta rule is four lines:
@@ -67,10 +65,10 @@ the squashing function and `d` the target, the whole of the generalized delta ru
 
 Four things turn them into the 139 lines of code in `c/train.c`. Layers are flat arrays rather than a
 matrix library, so the products are written out. A convolutional layer shares one filter across every
-position, so its gradient is the sum over the positions it visited rather than one term. Every scratch
-buffer is allocated once in `trainer_new`, so the training loop allocates nothing. And the derivative
-is not assumed: `make ut` checks it against finite differences, for the dense and both convolutional
-paths, which is the check that catches a sharing bug the loss curve would hide.
+position, so its gradient is a sum over those positions. Every scratch buffer is allocated once in
+`trainer_new`, so the training loop allocates nothing. And the derivative is checked rather than
+assumed: `make ut` compares it against finite differences for the dense layer and both convolutional
+layers. A gradient-sharing bug passes a loss curve and fails that check.
 
 ## Fit and score
 
@@ -91,22 +89,20 @@ which model produced a number is part of the number. **Column 2 is the value bei
 columns 3 onward are the terms, exactly as in linearr. Nothing in the data can say which column you
 meant.
 
-The four numbers on the right are the report, and they are the reason to prefer this over a fifteen-line
-network somebody pastes into a script. `train` is the error on the rows the fit saw and `held-out` is
-the error on rows it did not; `refit sd` is the spread of the held-out figure over repeated fits of the
-same configuration; and `floor` is 2.77 times that spread, which is the smallest difference between two
-configurations this pipeline can resolve at all. Two setups closer than the floor are not distinguished
-by this data, whichever way the comparison came out.
+The four numbers on the right are the report. `train` is the error on the rows the fit saw, `held-out`
+the error on the rows it did not. `refit sd` is the spread of the held-out figure over repeated fits of
+the same configuration. `floor` is 2.77 times that spread: two configurations closer together than the
+floor cannot be told apart on this data, whichever way the comparison came out.
 
-Scoring repeats the fit-time error and the spread on every prediction, because a prediction printed to
-four decimals from a model whose own error is 1.15 invites more confidence than it has earned.
+Scoring prints the fit-time error and the spread again on every prediction. A prediction given to four
+decimals, from a model whose own error is 1.15, would otherwise read as more precise than it is.
 
 ## Groups
 
 **A group is one fitted network.** Rows sharing a group code are fitted together and get their own
-network, so one file and one pass produce one model per subset. This is linearr's convention and it
-matters more here: a network fitted across pooled groups will happily learn the group's identity from
-whatever term correlates with it, and say nothing about having done so.
+network, so one file and one pass produce one model per subset. This is linearr's convention, and it
+matters more here. Pool the groups and a network can pick up the group's identity from whatever term
+happens to correlate with it. Nothing in the output shows when that has happened.
 
 ## Options
 
@@ -121,20 +117,72 @@ whatever term correlates with it, and say nothing about having done so.
 | `-m X` | 0.9 | momentum |
 | `-a NAME` | tanh | hidden activation: `sigmoid`, `tanh` or `relu`; the output stays a sigmoid |
 | `--holdout X` | 0.25 | fraction of rows kept out of the fit |
+| `--stream` | | fit without holding the rows; see [Memory](#memory-and-files-larger-than-it) |
+| `--buffer N` | 65536 | rows in the shuffle window under `--stream` |
+| `--footprint T G` | | what a fit of T terms and G groups costs in memory |
 | `--selftest` | | check the arithmetic and exit |
 
-`--holdout 0` disables the split, which makes the reported error meaningless as a statement about
-generalization. It exists for the case where the relation is noiseless and known, and the option says
-so rather than quietly reporting a training error in a column headed held-out.
+`--holdout 0` disables the split. The reported error then says nothing about generalization, and the
+report says so. It is there for the case where the relation is noiseless and known.
 
-## The three ways it misleads you
+## Memory, and files larger than it
 
-linearr reports collinearity, exhausted degrees of freedom and lost digits. A network fails
-differently, and these three the program can see from what it holds.
+By default every row is held in memory. `--stream` does not hold them: it reads the file twice, once
+for the ranges and once to write a cache of the scaled rows, and then reads that cache once per epoch.
+Memory is then the networks plus the shuffle windows, and neither depends on the number of rows.
 
-**It memorises.** A line with two coefficients cannot memorise thirteen points; a network with thirty
-weights can, and its training error then measures recall rather than knowledge. So the rows are split
-and both errors are printed next to each other, with the arithmetic stated when it goes badly wrong:
+Least squares needs one pass because its objective has a fixed-size sufficient statistic.
+Backpropagation has none: the gradient depends on the current weights, so every epoch has to see the
+rows again. Streaming removes the storage, not the passes.
+
+`scripts/scale.sh` measures it, fitting the same model over ten times the rows:
+
+    $ scripts/scale.sh 50000
+                                             50000 rows  500000 rows
+    --stream, peak RSS (kB)                        7168         8704
+    default, peak RSS (kB)                        53376       513792
+
+The default path grows by ten. `--stream` grows by 1.5 MB, which is the shuffle window filling up:
+it holds `--buffer` rows and stops there. `--footprint TERMS GROUPS` prints the figures for a shape
+before you run anything:
+
+    $ ./bpnn --footprint 24 400
+    24 terms, 400 groups, 6 hidden units, 5 refits
+
+    fitting with --stream
+      per group per refit    1.25 kB
+      networks in total      2.9 MB
+      shuffle windows        33.8 MB
+      total                  36.7 MB
+
+    fitting without --stream, add the row store, which does take a row count:
+      per row                528 bytes
+
+    The --stream cache is a temporary file of 108 bytes a row, removed on exit.
+
+The two paths give different numbers, and neither is an approximation of the other. The default
+shuffles each group's rows completely every epoch. `--stream` shuffles through a window of `--buffer`
+rows, so the training order differs. Both repeat byte for byte from the same input, and the default
+is the one every number elsewhere in this file comes from.
+
+One case to know about: a file already sorted by the response, with a window smaller than the file.
+The window then leaves that order nearly intact and the fit trains on it. That is reported rather
+than left to show up as a worse fit:
+
+    $ ./bpnn -t rows.csv --stream --buffer 4
+    bpnn: rows.csv is sorted by y, or nearly so, and the shuffle window holds
+    4 of its 40 rows, so each pass trains on close to that order. Shuffle
+    the file, or raise --buffer above the row count.
+
+## Three ways the fit can be wrong
+
+linearr checks for collinearity, exhausted degrees of freedom and lost digits. A network fails in
+different ways. These three are the ones this program can check.
+
+**The fit memorised the rows.** Two coefficients cannot memorise thirteen points. Thirty weights can,
+and then the training error measures recall, not accuracy. So the rows are split, and the error on
+the fitted rows and on the held-out rows are printed side by side. If the second is much larger, the
+model learned this table rather than the relation behind it.
 
     $ ./bpnn -t ~/linearr/example/simple-train.csv > /dev/null
     group        rows   held  weights      train   held-out   refit sd      floor
@@ -145,18 +193,16 @@ and both errors are printed next to each other, with the arithmetic stated when 
       held-out error is 355556.7x the training error: this network is fitting
       the rows rather than the relation. Fewer hidden units, or more rows.
 
-**Retraining changes the answer.** Least squares has one solution and returns it every time. A network
-starts from random weights and shuffles its examples, so the same rows fitted twice give two models
-and two scores. That spread is not a nuisance to be averaged away, it is the resolution of every
-comparison made with this tool, which is why the fit is repeated over `-s` seeds and the spread is
-printed beside the error. The model written out is the **median** of those seeds and not the best of
-them: picking the best by held-out error makes that error optimistic by however much was selected for,
-which is the oldest mistake in model selection. Both numbers are in the model file so the gap is
-visible.
+**Refitting gives a different answer.** Least squares has one solution. A network starts from random
+weights and shuffles its examples, so fitting the same rows twice gives two models and two scores.
+`-s` sets the number of refits. The spread over them is printed next to the error, and 2.77 times
+that spread is the resolution: two configurations closer than that cannot be told apart on this data.
+The model written out is the median refit, not the best one. The best is optimistic by however much
+was selected for, so both numbers go in the model file.
 
-**It does not extrapolate, and will not say so unless asked.** This is the one linearr names as a way
-regression misleads that it cannot check. Here it can be, because the network has to store the range
-of every input in order to scale it:
+**A case can fall outside the data.** linearr lists this as something a regression cannot check. This
+program can check it, because scaling an input needs the range it was trained on, and that range is
+stored in the model. Outside the range the units saturate and the prediction goes flat:
 
     $ ./bpnn -c model.txt 001 dose=25 age=60
     001 los = 22.9534
@@ -165,15 +211,14 @@ of every input in order to scale it:
     A network does not extrapolate. Past the range above its units saturate and it
     returns a flat value with no warning of its own, so treat this number as a guess.
 
-Three it cannot see, and does not claim to: a term that should have been in the table and is not, rows
-that are not independent of each other, and a response whose relation to the inputs changed after the
-training rows were collected.
+Three it cannot check: a term missing from the table, rows that are not independent of each other,
+and a relation that changed after the training rows were collected.
 
 ## What it refuses to read
 
-A network has no notion of a term it cannot identify, so nothing downstream will notice a bad value:
-an empty field read as a zero, or a single `nan`, reaches every weight in the group and every number
-the model then prints. Each of these is refused at the door, naming the line and the column:
+A bad value in the input is not caught later. An empty field read as a zero, or one `nan`, spreads
+through the training to every weight in the group and to every number the model then prints. So these
+are refused when the file is read, with the line and the column named:
 
     $ awk 'NR==118{sub(/,[^,]*$/,",nan")}1' example/nonlinear.csv > rows.csv
     $ ./bpnn -t rows.csv
@@ -183,10 +228,10 @@ the model then prints. Each of these is refused at the door, naming the line and
     1
 
 Also refused: a row whose field count disagrees with the header, an empty field, a header naming the
-same term twice, a group code too long to store whole (two such codes would otherwise merge into one
-fit silently), an unknown option, an option missing its value, and a case that leaves a term unnamed,
-since scoring it as zero would answer a different question from the one asked. `tests/cli.sh` holds
-one check per refusal, because none of them is reachable from the unit suite.
+same term twice, a group code too long to store whole (two such codes would otherwise be merged into
+one fit), an unknown option, an option missing its value, and a case that leaves a term unnamed, since
+scoring it as zero answers a different question. `tests/cli.sh` has one check per refusal. None of
+them can be reached from the unit suite.
 
 ## When a network is worth it, and when a line with one more column is worth more
 
@@ -202,20 +247,19 @@ a 4-core i7-1165G7; RMSE, lower is better.
 | saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.26 |
 | y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.44 |
 
-And then the option a network is usually not measured against: the same line, with the one extra column
-its own diagnostic asked for. Still closed form, still exact, still coefficients you can read.
+Then the comparison a network is usually not put through: the same line, with the one extra column
+its own diagnostic asked for. Still closed form, still exact, still readable coefficients.
 
 | line, plus the extra column | best possible | resid SD |
 |---|---|---|
 | + dose² (the check named dose) | 1.0 | 1.20 |
 | + x₁·x₂ (the check could not name the pair) | 1.0 | **1.02** |
 
-So the network never won this table. A correctly specified line reaches the noise floor, gets there
-with no seed and no spread, and hands you coefficients you can give to somebody. What a network buys
-is not accuracy but not having to guess which column to add, and that guess is cheap exactly when the
-diagnostic names the term. It stops being cheap when the check can only say that some pair interacts,
-because the candidates then number p(p−1)/2: one pair at two terms, 276 at twenty-four. That gap is
-the case for running this program, and it is narrower than the usual framing suggests.
+The network never won this table. A correctly specified line reaches the noise floor, has no seed and
+no spread, and gives coefficients you can hand to somebody. What a network saves is the guess about
+which column to add. That guess is cheap when the diagnostic names the term, and expensive when it
+can only report that some pair interacts: the candidate pairs number p(p−1)/2, so one pair at two
+terms and 276 at twenty-four. The second case is the one this program is for.
 
 ## The example data
 
@@ -237,11 +281,10 @@ something interacts. The linear cases in the table above are linearr's own examp
     make tools      the measurement tools; runs the two self-tests
     make clean
 
-A warning is a defect. `make check` gates every commit and both sanitizers run before one; the
-sanitizer targets build the binary as well as the suite, because the CSV reader is the part that
-meets input somebody else wrote and `make ut` never reaches it. `./bpnn
---selftest` is the smaller check the binary carries itself: input scaling at both ends, the target
-round-trip, the resolution coefficient, and a parabola fitted to a known error.
+A warning is a defect. `make check` gates every commit, and both sanitizers run before one. The
+sanitizer targets build the binary as well as the suite, since the CSV reader is only reached through
+the binary. `./bpnn --selftest` is a smaller check the binary carries itself: input scaling at both
+ends, the target round-trip, the resolution coefficient, and a parabola fitted to a known error.
 
 ## Where this is the right tool, and where it is not
 
@@ -257,23 +300,21 @@ None of that is here and none of it is planned. PyTorch, scikit-learn's `MLPRegr
 boosting for tabular data in particular do all of it well, and on tables of this shape boosting usually
 beats a small network.
 
-**Two limits worth stating plainly.** The engine computes in `smb_real`, which is `float`, so about
-seven digits; linearr validates against NIST reference values to eleven, and nothing here should be
-trusted past six. And unlike linearr, this program holds every row in memory: the fit needs many
-passes over the data, so the O(1)-in-rows property of its sibling is not available and is not claimed.
-The built-in ceilings are 64 terms and 512 groups.
+**Two limits.** The engine computes in `smb_real`, which is `float`, so about seven digits. linearr
+validates against NIST reference values to eleven; nothing here should be trusted past six. And the
+build ceilings are 64 terms and 512 groups, both fixed at compile time.
 
 ## The measurement tools
 
-These came out of a closed research direction (below) and are the part of it that survived. They are
-independent of the engine: one self-contained `.c` each, no dependencies.
+These are what a closed research direction (below) left behind. Each is one self-contained `.c` with
+no dependencies and no link to the engine.
 
 **`validation/resolve.c`** answers three questions from repeated scores, and refuses to guess when
 given one run per candidate: is candidate 0 really better than the others, how many runs per candidate
 would resolve a difference of a given size, and what is the best rank correlation any predictor could
 score against labels this noisy.
 
-**`validation/pairstat.c`** is the piece most worth borrowing. Paired statistics with named tests:
+**`validation/pairstat.c`** is the most reusable of them. Paired statistics with named tests:
 Wilcoxon signed-rank as primary, exact by dynamic programming where ties permit and tie-corrected
 normal otherwise, always reporting which it used; an exact sign test; Hodges-Lehmann estimates with
 distribution-free intervals; a paired *t* as secondary; Holm correction across a declared family; and a

@@ -194,8 +194,12 @@ order, because each step is the ground the next one stands on:
 2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, 91 checks, one per refusal plus the numeric
    invariances (a term in millions and a response offset by 1e8 must fit identically, and the
    printed prediction must still resolve the response, which at `%g`'s six digits it did not).
-3. **Streaming, per the section above**, behind the same CLI, with `--footprint` and a scale script
-   that proves peak memory does not move over a tenfold increase in rows.
+3. ~~**Streaming.**~~ Done as `--stream`, with `--footprint` and `scripts/scale.sh`. Measured over a
+   tenfold increase in rows: 7.2 MB to 8.7 MB streaming, against 53 MB to 514 MB holding them. The
+   rise is the shuffle window filling and stopping at `--buffer`. Points 1 to 4 of the section above
+   are implemented; point 5 is not. Epochs are still a fixed count, so a large file costs
+   epochs x rows of I/O with no early stop, and the CSV is re-parsed on both of the first two passes
+   rather than cached across runs.
 4. **Real data.** The 24-term length-of-stay shape from linearr's example data is the target; FSDD
    (`data/fsdd/PROVENANCE.md`) is the non-tabular check the engine already has paths for.
 5. **A classifier**, which needs more than one output and a softmax with cross-entropy. Not before the

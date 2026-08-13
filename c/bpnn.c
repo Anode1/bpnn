@@ -14,41 +14,37 @@
  *     A,46,-6
  *     A,35,-5
  *
- * IT REPORTS THREE OF THE WAYS A NETWORK MISLEADS YOU, which are not the three a regression has.
+ * IT REPORTS THREE WAYS THE FIT CAN BE WRONG. A regression fails differently, so these are not
+ * linearr's three.
  *
- *   1. IT MEMORISES. A line with two coefficients cannot memorise thirteen points; a network with
- *      thirty weights can, and the training error then measures recall rather than knowledge. So the
- *      rows are split, the fit sees only part of them, and both errors are reported next to each
- *      other. When held-out error is much the worse of the two, the model learned this table and not
- *      the relation behind it.
+ *   1. THE FIT MEMORISED THE ROWS. Two coefficients cannot memorise thirteen points; thirty weights
+ *      can, and the training error then measures recall rather than accuracy. So the rows are split,
+ *      the fit sees one part, and both errors are reported side by side. When the held-out error is
+ *      much the larger, the model learned this table and not the relation behind it.
  *
- *   2. RETRAINING CHANGES THE ANSWER. Least squares has one solution and returns it every time. A
- *      network starts from random weights and shuffles its examples, so refitting the same rows gives
- *      a different model and a different score. That spread is not a nuisance to be averaged away: it
- *      sets the smallest difference between two configurations this pipeline can resolve at all. So
- *      the fit is repeated over several seeds and reports the spread and that floor. Any comparison
- *      of two setups closer than the floor is noise, whichever way it came out.
+ *   2. REFITTING GIVES A DIFFERENT ANSWER. Least squares has one solution. A network starts from
+ *      random weights and shuffles its examples, so the same rows fitted twice give two models and
+ *      two scores. That spread is the resolution of the tool: two configurations closer together
+ *      than 2.77 times it cannot be told apart, whichever way the comparison came out. So the fit is
+ *      repeated over several seeds and the spread and that limit are both reported.
  *
- *      For the same reason the model shipped is the MEDIAN of the seeds and not the best of them.
- *      Picking the best by held-out error makes that error optimistic by however much was selected
- *      for, which is the oldest mistake in model selection (Spearman 1904 for the arithmetic;
- *      Cawley & Talbot 2010 for the modern form). Both numbers are printed so the gap is visible.
+ *      The model written out is the MEDIAN of the seeds, not the best of them. Selecting the best by
+ *      held-out error makes that error optimistic by however much was selected for (Spearman 1904 for
+ *      the arithmetic, Cawley & Talbot 2010 for the modern form). Both numbers are printed.
  *
- *   3. IT DOES NOT EXTRAPOLATE, AND WILL NOT SAY SO UNLESS ASKED. This is the one linearr names as a
- *      way regression misleads that it cannot check. Here it can be checked, because a network has to
- *      store the range of every input in order to scale it. Outside that range a saturating unit
- *      returns a flat, confident number with no hint that it is guessing, where a line at least keeps
- *      going in the direction the data suggested. So scoring reports every input that falls outside
- *      the range it was trained on, and how far outside.
+ *   3. A CASE CAN FALL OUTSIDE THE DATA. linearr lists this as something a regression cannot check.
+ *      This program can, because scaling an input needs the range it was trained on. Outside that
+ *      range the units saturate and the prediction is flat, with nothing in the number to show it,
+ *      whereas a line keeps going in the direction the data suggested. So scoring reports every input
+ *      outside its training range and how far outside it is.
  *
- * Three the program cannot see, and does not claim to: a term that should have been in the table and
- * is not, rows that are not independent of each other, and a response whose relation to the inputs
- * changed after the training rows were collected.
+ * Three it cannot check: a term missing from the table, rows that are not independent of each other,
+ * and a relation that changed after the training rows were collected.
  *
- * WHEN NOT TO USE IT. If the relation is close to linear, use linearr: it will be more accurate, it
- * returns coefficients you can read, and it has one answer rather than a distribution of them. This
- * program earns its place only where a line leaves structure in the residuals. bench/ measures both on
- * the same files so the crossover is visible rather than asserted.
+ * WHEN NOT TO USE IT. If the relation is close to linear, use linearr: it is more accurate, it
+ * returns coefficients you can read, and it has one answer rather than a distribution of them. Use
+ * this program where a line leaves structure in the residuals. bench/compare.sh measures both on the
+ * same files, so the crossover is measured rather than asserted.
  *
  * PRECISION. The engine computes in `smb_real`, which is float, so about seven digits. linearr
  * validates against NIST reference values to eleven. Nothing here should be trusted past six.
@@ -98,6 +94,8 @@ static long    nrow, caprow;
 static long   hidden = 6, epochs = 3000, nseed = 5;
 static double rate = 0.3, momentum = 0.9, holdout = 0.25;
 static int    activation = ACT_TANH;
+static int    streaming;            /* --stream: fit without holding the rows */
+static long   bufrows = 65536;      /* --buffer: the shuffle window, in rows */
 
 /* ---------------------------------------------------------------- CSV input */
 
@@ -147,10 +145,10 @@ static int grow(long want)
 
 /* A field that must be a finite number. WHAT names it for the message, LINE locates it.
  *
- * Every refusal here is a value that would otherwise have reached a weight. An empty field
- * read as zero, a nan multiplied through the layers, or a row dropped without a word all end
- * the same way: a model that trained, printed a number, and exited 0. That is the failure this
- * program is least able to detect afterwards, so it is refused at the door. */
+ * Each refusal here is a value that would otherwise reach a weight. An empty field read as zero,
+ * a nan multiplied through the layers, or a row dropped without a message all produce the same
+ * result: a model that trained, printed a number and exited 0. Nothing later in the program can
+ * detect that, so the check is here. */
 static int number(const char *s, const char *what, long line, double *out)
 {
     char *end;
@@ -178,9 +176,9 @@ static int number(const char *s, const char *what, long line, double *out)
     return 0;
 }
 
-/* A name from the header or the group column: non-empty and short enough to be stored whole.
- * A truncated group name is the dangerous one, because two distinct groups then merge into one
- * fit without anything being printed. */
+/* A name from the header or the group column: non-empty, and short enough to store whole. A
+ * truncated group name is the one that matters, because two distinct groups sharing a prefix
+ * would then be fitted as one, with no message. */
 static int checkname(const char *s, const char *what, long line)
 {
     if (*s == '\0') {
@@ -195,86 +193,120 @@ static int checkname(const char *s, const char *what, long line)
     return 0;
 }
 
-/* Read PATH: header names the response (column 2) and the terms (3 onward). */
-static int read_csv(const char *path)
+/* One parsed row at a time. Both fitting paths read through this, so they cannot come to
+ * disagree about what a file said or about which rows are refused. */
+typedef struct {
+    FILE       *f;
+    const char *path;
+    long        lineno;
+    int         header;
+} Reader;
+
+static int reader_open(Reader *rd, const char *path)
 {
-    FILE *f = strcmp(path, "-") ? fopen(path, "r") : stdin;
+    rd->f = strcmp(path, "-") ? fopen(path, "r") : stdin;
+    rd->path = path;
+    rd->lineno = 0;
+    rd->header = 0;
+    if (!rd->f) { fprintf(stderr, "bpnn: cannot open %s\n", path); return -1; }
+    return 0;
+}
+
+static void reader_close(Reader *rd)
+{
+    if (rd->f && rd->f != stdin) fclose(rd->f);
+    rd->f = NULL;
+}
+
+/* Returns 1 with a row in GRP/Y/X, 0 at end of file, -1 refused with the reason printed.
+ * The header is consumed on the first non-comment line and names the response and the terms. */
+static int reader_row(Reader *rd, long *grp, double *y, double *x)
+{
     char line[LINELEN], *fld[MAXTERM + 8];
     char what[NAMELEN + 32];
-    long lineno = 0;
-    int nf, i, header = 0;
-    if (!f) { fprintf(stderr, "bpnn: cannot open %s\n", path); return -1; }
-    while (fgets(line, sizeof line, f)) {
-        lineno++;
+    int nf, i;
+
+    while (fgets(line, sizeof line, rd->f)) {
+        rd->lineno++;
         /* fgets splits an over-long line in two, and the tail would then be read as a row of
          * its own. Refuse it rather than fit half a row. */
-        if (strchr(line, '\n') == NULL && !feof(f)) {
-            fprintf(stderr, "bpnn: line %ld is longer than %d characters.\n", lineno, LINELEN - 1);
-            goto bad;
+        if (strchr(line, '\n') == NULL && !feof(rd->f)) {
+            fprintf(stderr, "bpnn: line %ld is longer than %d characters.\n",
+                    rd->lineno, LINELEN - 1);
+            return -1;
         }
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
         nf = split_csv(line, fld, MAXTERM + 8);
-        if (!header) {
+        if (!rd->header) {
             if (nf < 3) {
                 fprintf(stderr, "bpnn: the header on line %ld needs a group column, the value\n"
-                                "being predicted, and at least one term.\n", lineno);
-                goto bad;
+                                "being predicted, and at least one term.\n", rd->lineno);
+                return -1;
             }
             nterm = nf - 2;
             if (nterm > MAXTERM) {
                 fprintf(stderr, "bpnn: %ld terms on line %ld; this build holds %d.\n",
-                        nterm, lineno, MAXTERM);
-                goto bad;
+                        nterm, rd->lineno, MAXTERM);
+                return -1;
             }
-            if (checkname(fld[1], "the name of the value being predicted", lineno) != 0) goto bad;
+            if (checkname(fld[1], "the name of the value being predicted", rd->lineno) != 0)
+                return -1;
             strncpy(response, fld[1], NAMELEN - 1);
             for (i = 0; i < nterm; i++) {
                 int j;
-                if (checkname(fld[i + 2], "a term name", lineno) != 0) goto bad;
+                if (checkname(fld[i + 2], "a term name", rd->lineno) != 0) return -1;
                 for (j = 0; j < i; j++)
                     if (!strcmp(term[j], fld[i + 2])) {
                         fprintf(stderr, "bpnn: the header names the term '%s' twice, so a case\n"
                                         "naming it could mean either column.\n", fld[i + 2]);
-                        goto bad;
+                        return -1;
                     }
                 strncpy(term[i], fld[i + 2], NAMELEN - 1);
             }
-            header = 1;
+            rd->header = 1;
             continue;
         }
         if (nf != nterm + 2) {
             fprintf(stderr, "bpnn: line %ld has %d field%s; the header declared %ld (the group,\n"
-                            "%s, and %ld term%s).\n", lineno, nf, nf == 1 ? "" : "s",
+                            "%s, and %ld term%s).\n", rd->lineno, nf, nf == 1 ? "" : "s",
                     nterm + 2, response, nterm, nterm == 1 ? "" : "s");
-            goto bad;
+            return -1;
         }
-        {
-            long g, j;
-            double v;
-            if (checkname(fld[0], "the group", lineno) != 0) goto bad;
-            g = group_of(fld[0]);
-            if (g < 0) { fprintf(stderr, "bpnn: more than %d groups.\n", MAXGROUP); goto bad; }
-            if (grow(nrow + 1) != 0) { fprintf(stderr, "bpnn: out of memory\n"); goto bad; }
-            snprintf(what, sizeof what, "'%s', the value being predicted,", response);
-            if (number(fld[1], what, lineno, &v) != 0) goto bad;
-            ys[nrow] = v;
-            for (j = 0; j < nterm; j++) {
-                snprintf(what, sizeof what, "the term '%s'", term[j]);
-                if (number(fld[j + 2], what, lineno, &v) != 0) goto bad;
-                xs[nrow * MAXTERM + j] = v;
-            }
-            rowgrp[nrow] = g;
-            gp[g].n++;
-            nrow++;
+        if (checkname(fld[0], "the group", rd->lineno) != 0) return -1;
+        *grp = group_of(fld[0]);
+        if (*grp < 0) { fprintf(stderr, "bpnn: more than %d groups.\n", MAXGROUP); return -1; }
+        snprintf(what, sizeof what, "'%s', the value being predicted,", response);
+        if (number(fld[1], what, rd->lineno, y) != 0) return -1;
+        for (i = 0; i < nterm; i++) {
+            snprintf(what, sizeof what, "the term '%s'", term[i]);
+            if (number(fld[i + 2], what, rd->lineno, &x[i]) != 0) return -1;
         }
+        return 1;
     }
-    if (ferror(f)) { fprintf(stderr, "bpnn: error reading %s\n", path); goto bad; }
-    if (f != stdin) fclose(f);
-    if (!header) { fprintf(stderr, "bpnn: %s has no header line.\n", path); return -1; }
+    if (ferror(rd->f)) { fprintf(stderr, "bpnn: error reading %s\n", rd->path); return -1; }
+    if (!rd->header) { fprintf(stderr, "bpnn: %s has no header line.\n", rd->path); return -1; }
     return 0;
-bad:
-    if (f != stdin) fclose(f);
-    return -1;
+}
+
+/* Read PATH into the row store: every row resident, which is what the default path fits from. */
+static int read_csv(const char *path)
+{
+    Reader rd;
+    double x[MAXTERM], y;
+    long g;
+    int r;
+
+    if (reader_open(&rd, path) != 0) return -1;
+    while ((r = reader_row(&rd, &g, &y, x)) == 1) {
+        if (grow(nrow + 1) != 0) { fprintf(stderr, "bpnn: out of memory\n"); r = -1; break; }
+        memcpy(xs + nrow * MAXTERM, x, (size_t)nterm * sizeof *xs);
+        ys[nrow] = y;
+        rowgrp[nrow] = g;
+        gp[g].n++;
+        nrow++;
+    }
+    reader_close(&rd);
+    return r == 0 ? 0 : -1;
 }
 
 /* Sort rows by group so each group is one contiguous span (insertion by counting). */
@@ -297,25 +329,45 @@ static int regroup(void)
 
 /* ------------------------------------------------------------------ scaling */
 
-static void ranges(Group *g)
+/* The range of every term and of the response, which is all the scaling needs. Split into three
+ * so that the streaming path can accumulate it in one pass without holding a row: this is the
+ * one part of a network's fit that has a fixed-size sufficient statistic, exactly as a least
+ * squares fit does, and it is the reason the first pass can be a pass and not a load. */
+static void range_init(Group *g)
 {
-    long i, j;
+    long j;
     for (j = 0; j < nterm; j++) { g->lo[j] = 1e300; g->hi[j] = -1e300; }
     g->tlo = 1e300; g->thi = -1e300;
-    for (i = g->first; i < g->first + g->n; i++) {
-        for (j = 0; j < nterm; j++) {
-            double v = xs[i * MAXTERM + j];
-            if (v < g->lo[j]) g->lo[j] = v;
-            if (v > g->hi[j]) g->hi[j] = v;
-        }
-        if (ys[i] < g->tlo) g->tlo = ys[i];
-        if (ys[i] > g->thi) g->thi = ys[i];
+}
+
+static void range_add(Group *g, const double *x, double y)
+{
+    long j;
+    for (j = 0; j < nterm; j++) {
+        if (x[j] < g->lo[j]) g->lo[j] = x[j];
+        if (x[j] > g->hi[j]) g->hi[j] = x[j];
     }
+    if (y < g->tlo) g->tlo = y;
+    if (y > g->thi) g->thi = y;
+}
+
+static void range_done(Group *g)
+{
+    long j;
     for (j = 0; j < nterm; j++) if (g->hi[j] <= g->lo[j]) g->hi[j] = g->lo[j] + 1.0; /* constant term */
     /* A response that never varied would divide by zero here. Widening the range keeps the
      * arithmetic finite and makes the fit look perfect, so the fact is recorded and reported. */
     g->flat = g->thi <= g->tlo;
     if (g->flat) g->thi = g->tlo + 1.0;
+}
+
+static void ranges(Group *g)
+{
+    long i;
+    range_init(g);
+    for (i = g->first; i < g->first + g->n; i++)
+        range_add(g, xs + i * MAXTERM, ys[i]);
+    range_done(g);
 }
 
 static void scale_in(const Group *g, const double *raw, smb_real *out)
@@ -335,9 +387,9 @@ static double unscale_out(const Group *g, double a)
     return g->tlo + (a - TLO) / (THI - TLO) * (g->thi - g->tlo);
 }
 
-/* Significant digits enough to show a prediction moving across the range it was fitted on.
- * A response near 1e8 varying over 60 printed at %g's default six digits is 1e+08 every time:
- * the model's whole answer falls off the end of the number. */
+/* Enough significant digits to show a prediction move across the range it was fitted on. A
+ * response near 1e8 that varies over 60 prints as 1e+08 at %g's six digits, for every case in
+ * the group: six digits are all spent on the offset. */
 static int sigdigits(double v, double span)
 {
     int d = 6;
@@ -466,6 +518,316 @@ done:
     return rc;
 }
 
+/* ---------------------------------------------------- fitting from a stream */
+
+/* The default path holds every row in memory. This one does not. It reads the file twice, once
+ * for the ranges and once to write a cache of the scaled rows, then makes one pass over that
+ * cache per epoch. Memory is the networks plus the shuffle windows. Neither depends on the
+ * number of rows.
+ *
+ * Least squares needs one pass because its objective has a fixed-size sufficient statistic.
+ * Backpropagation has none: the gradient depends on the current weights, so every epoch has to
+ * see the rows again. Streaming removes the storage, not the passes.
+ *
+ * The two paths give different numbers. The default shuffles each group's rows completely every
+ * epoch; this one shuffles through a window of --buffer rows, so the training order differs.
+ * Both are deterministic. The default is the one the archived numbers come from.
+ *
+ * A cache record holds the group, the row's ordinal within that group, and the scaled terms and
+ * target. Scaling here means an epoch is a sequential read with no arithmetic per row except the
+ * network's own. */
+
+#define REC_HEAD  (2 * sizeof(int32_t))
+
+static size_t recsize(void)
+{
+    return REC_HEAD + (size_t)(nterm + 1) * sizeof(float);
+}
+
+/* Which rows are held out, from a hash of the row's position rather than a draw from the
+ * training PRNG. A draw would move the split whenever the training consumed a different number
+ * of random numbers, which is a change in the split for an unrelated reason. The seed is part of
+ * the hash so that each refit holds out a different quarter, as the default path does; the
+ * reported spread is over splits as well as over starting weights. */
+static uint32_t mix32(uint32_t a, uint32_t b, uint32_t c)
+{
+    uint32_t h = a * 0x9E3779B1u + b * 0x85EBCA6Bu + c * 0xC2B2AE35u;
+    h ^= h >> 15; h *= 0x2C1B3C6Du;
+    h ^= h >> 13; h *= 0x297A2D39u;
+    h ^= h >> 16;
+    return h;
+}
+
+static int held_row(long g, long ord, long seed)
+{
+    if (holdout <= 0) return 0;
+    return (double)mix32((uint32_t)g, (uint32_t)ord, (uint32_t)seed) < holdout * 4294967296.0;
+}
+
+/* A window of records in random order: push one in, take one out. Memory is the window size,
+ * where a full permutation would need eight bytes per row of the file. */
+typedef struct {
+    unsigned char *buf;
+    long           fill;
+    Rng            rng;
+} Shuf;
+
+static int shuf_push(Shuf *s, const unsigned char *in, unsigned char *out, size_t rs, long cap)
+{
+    long j;
+    if (s->fill < cap) {
+        memcpy(s->buf + (size_t)s->fill * rs, in, rs);
+        s->fill++;
+        return 0;
+    }
+    j = (long)(rng_u32(&s->rng) % (uint32_t)cap);
+    memcpy(out, s->buf + (size_t)j * rs, rs);
+    memcpy(s->buf + (size_t)j * rs, in, rs);
+    return 1;
+}
+
+/* Empty the window in random order at the end of a pass, so one epoch is one visit to each
+ * row and no row is carried over into the next epoch. */
+static int shuf_pop(Shuf *s, unsigned char *out, size_t rs)
+{
+    long j;
+    if (s->fill <= 0) return 0;
+    j = (long)(rng_u32(&s->rng) % (uint32_t)s->fill);
+    memcpy(out, s->buf + (size_t)j * rs, rs);
+    s->fill--;
+    memcpy(s->buf + (size_t)j * rs, s->buf + (size_t)s->fill * rs, rs);
+    return 1;
+}
+
+/* Pass one: the ranges, the row counts, and whether the file arrives sorted by the response. */
+static int scan_ranges(const char *path, long *sorted_runs, long *sorted_steps)
+{
+    Reader rd;
+    double x[MAXTERM], y, *prev = NULL;
+    long g, i, r;
+    int rc = -1;
+
+    if (reader_open(&rd, path) != 0) return -1;
+    while ((r = reader_row(&rd, &g, &y, x)) == 1) {
+        if (gp[g].n == 0) range_init(&gp[g]);
+        else {
+            (*sorted_steps)++;
+            if (y >= prev[g]) (*sorted_runs)++;
+        }
+        if (!prev) {
+            prev = calloc(MAXGROUP, sizeof *prev);
+            if (!prev) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+        }
+        prev[g] = y;
+        range_add(&gp[g], x, y);
+        gp[g].n++;
+        nrow++;
+    }
+    if (r != 0) goto done;
+    for (i = 0; i < ngroup; i++) range_done(&gp[i]);
+    rc = 0;
+done:
+    free(prev);
+    reader_close(&rd);
+    return rc;
+}
+
+/* Pass two: the same rows, scaled once and written to the cache the epochs read. */
+static int pack_cache(const char *path, FILE *cache)
+{
+    Reader rd;
+    double x[MAXTERM], y;
+    unsigned char rec[REC_HEAD + (MAXTERM + 1) * sizeof(float)];
+    long *ord = calloc((size_t)MAXGROUP, sizeof *ord);
+    long g, r;
+    int rc = -1;
+
+    if (!ord) { fprintf(stderr, "bpnn: out of memory\n"); return -1; }
+    if (reader_open(&rd, path) != 0) { free(ord); return -1; }
+    while ((r = reader_row(&rd, &g, &y, x)) == 1) {
+        int32_t gi = (int32_t)g, oi = (int32_t)ord[g];
+        smb_real xn[MAXTERM], t;
+        long j;
+        scale_in(&gp[g], x, xn);
+        t = scale_out(&gp[g], y);
+        memcpy(rec, &gi, sizeof gi);
+        memcpy(rec + sizeof gi, &oi, sizeof oi);
+        for (j = 0; j < nterm; j++) {
+            float v = (float)xn[j];
+            memcpy(rec + REC_HEAD + (size_t)j * sizeof v, &v, sizeof v);
+        }
+        { float v = (float)t;
+          memcpy(rec + REC_HEAD + (size_t)nterm * sizeof v, &v, sizeof v); }
+        if (fwrite(rec, recsize(), 1, cache) != 1) {
+            fprintf(stderr, "bpnn: cannot write the row cache (out of temporary space?)\n");
+            goto done;
+        }
+        ord[g]++;
+    }
+    if (r != 0) goto done;
+    rc = 0;
+done:
+    free(ord);
+    reader_close(&rd);
+    return rc;
+}
+
+/* Fit every group and every refit in one set of passes over the cache. */
+static int fit_stream(const char *path)
+{
+    FILE          *cache = NULL;
+    Net          **nets = NULL;
+    Trainer      **trs = NULL;
+    Shuf          *sh = NULL;
+    unsigned char *rec = NULL, *out = NULL;
+    double        *sse_tr = NULL, *sse_he = NULL, *held = NULL, *srt = NULL;
+    long          *n_tr = NULL, *n_he = NULL;
+    long           sorted_runs = 0, sorted_steps = 0;
+    long           i, s, e, k;
+    size_t         rs;
+    int            rc = -1;
+
+    if (scan_ranges(path, &sorted_runs, &sorted_steps) != 0) return -1;
+    if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); return -1; }
+    rs = recsize();
+
+    k = ngroup * nseed;
+    nets   = calloc((size_t)k, sizeof *nets);
+    trs    = calloc((size_t)k, sizeof *trs);
+    sse_tr = calloc((size_t)k, sizeof *sse_tr);
+    sse_he = calloc((size_t)k, sizeof *sse_he);
+    n_tr   = calloc((size_t)k, sizeof *n_tr);
+    n_he   = calloc((size_t)k, sizeof *n_he);
+    held   = calloc((size_t)nseed, sizeof *held);
+    srt    = calloc((size_t)nseed, sizeof *srt);
+    sh     = calloc((size_t)nseed, sizeof *sh);
+    rec    = malloc(rs);
+    out    = malloc(rs);
+    if (!nets || !trs || !sse_tr || !sse_he || !n_tr || !n_he || !held || !srt || !sh
+        || !rec || !out) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+
+    for (s = 0; s < nseed; s++) {
+        sh[s].buf = malloc((size_t)bufrows * rs);
+        if (!sh[s].buf) { fprintf(stderr, "bpnn: out of memory for the shuffle window\n"); goto done; }
+        rng_seed(&sh[s].rng, (uint32_t)(7001u + 65537u * (unsigned)s));
+    }
+    for (i = 0; i < ngroup; i++) {
+        size_t dims[3];
+        dims[0] = (size_t)nterm; dims[1] = (size_t)hidden; dims[2] = 1;
+        for (s = 0; s < nseed; s++) {
+            Rng r;
+            Net *n = net_new(dims, 3);
+            if (!n) { fprintf(stderr, "bpnn: out of memory for the networks\n"); goto done; }
+            n->activation = activation;
+            rng_seed(&r, (uint32_t)(1u + 104729u * (unsigned)s));
+            net_init(n, &r);
+            nets[i * nseed + s] = n;
+            trs[i * nseed + s] = trainer_new(n, (smb_real)rate, (smb_real)momentum);
+            if (!trs[i * nseed + s]) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+        }
+    }
+
+    cache = tmpfile();
+    if (!cache) { fprintf(stderr, "bpnn: cannot open a temporary file for the row cache\n"); goto done; }
+    if (pack_cache(path, cache) != 0) goto done;
+
+    for (e = 0; e < epochs; e++) {
+        rewind(cache);
+        while (fread(rec, rs, 1, cache) == 1) {
+            for (s = 0; s < nseed; s++)
+                if (shuf_push(&sh[s], rec, out, rs, bufrows)) {
+                    int32_t g, ord;
+                    memcpy(&g, out, sizeof g);
+                    memcpy(&ord, out + sizeof g, sizeof ord);
+                    if (!held_row(g, ord, s))
+                        (void)trainer_learn(trs[(long)g * nseed + s],
+                                            (const smb_real *)(void *)(out + REC_HEAD),
+                                            (const smb_real *)(void *)(out + REC_HEAD +
+                                                (size_t)nterm * sizeof(float)));
+                }
+        }
+        for (s = 0; s < nseed; s++)
+            while (shuf_pop(&sh[s], out, rs)) {
+                int32_t g, ord;
+                memcpy(&g, out, sizeof g);
+                memcpy(&ord, out + sizeof g, sizeof ord);
+                if (!held_row(g, ord, s))
+                    (void)trainer_learn(trs[(long)g * nseed + s],
+                                        (const smb_real *)(void *)(out + REC_HEAD),
+                                        (const smb_real *)(void *)(out + REC_HEAD +
+                                            (size_t)nterm * sizeof(float)));
+            }
+    }
+
+    /* One more pass for the errors, in the response's own units. */
+    rewind(cache);
+    while (fread(rec, rs, 1, cache) == 1) {
+        int32_t g, ord;
+        float t;
+        double y;
+        memcpy(&g, rec, sizeof g);
+        memcpy(&ord, rec + sizeof g, sizeof ord);
+        memcpy(&t, rec + REC_HEAD + (size_t)nterm * sizeof t, sizeof t);
+        y = unscale_out(&gp[g], (double)t);
+        for (s = 0; s < nseed; s++) {
+            long at = (long)g * nseed + s;
+            double p = unscale_out(&gp[g],
+                (double)net_forward(nets[at], (const smb_real *)(void *)(rec + REC_HEAD))[0]);
+            if (held_row(g, ord, s)) { sse_he[at] += (p - y) * (p - y); n_he[at]++; }
+            else                     { sse_tr[at] += (p - y) * (p - y); n_tr[at]++; }
+        }
+    }
+
+    for (i = 0; i < ngroup; i++) {
+        Group *g = &gp[i];
+        double m = 0, v = 0, mid;
+        long med = 0;
+        if (g->n < 4) {
+            fprintf(stderr, "bpnn: group %s has %ld rows; a network needs more than that to say\n"
+                            "anything, and it is skipped rather than fitted.\n", g->name, g->n);
+            continue;
+        }
+        for (s = 0; s < nseed; s++) {
+            long at = i * nseed + s;
+            held[s] = n_he[at] > 0 ? sqrt(sse_he[at] / (double)n_he[at])
+                                   : sqrt(sse_tr[at] / (double)n_tr[at]);
+            if (s == 0 || held[s] < g->best_held) g->best_held = held[s];
+            m += held[s];
+            srt[s] = held[s];
+        }
+        m /= (double)nseed;
+        for (s = 0; s < nseed; s++) v += (held[s] - m) * (held[s] - m);
+        g->run_sd = nseed > 1 ? sqrt(v / (double)(nseed - 1)) : 0.0;
+        qsort(srt, (size_t)nseed, sizeof *srt, cmpd);
+        mid = srt[nseed / 2];
+        for (s = 0; s < nseed; s++) if (held[s] == mid) { med = s; break; }
+        g->net = nets[i * nseed + med];
+        nets[i * nseed + med] = NULL;
+        g->held_rmse = held[med];
+        g->train_rmse = sqrt(sse_tr[i * nseed + med] / (double)n_tr[i * nseed + med]);
+        g->nheld = n_he[i * nseed + med];
+        g->nseed = nseed;
+    }
+
+    /* If the file is already ordered by the response, a window smaller than the file leaves
+     * that order nearly intact and the fit sees it. Report it: the alternative is a worse fit
+     * with no stated cause. */
+    if (sorted_steps > 0 && sorted_runs > (long)(0.99 * (double)sorted_steps) && nrow > bufrows)
+        fprintf(stderr, "bpnn: %s is sorted by %s, or nearly so, and the shuffle window holds\n"
+                        "%ld of its %ld rows, so each pass trains on close to that order. Shuffle\n"
+                        "the file, or raise --buffer above the row count.\n",
+                path, response, bufrows, nrow);
+    rc = 0;
+done:
+    if (cache) fclose(cache);
+    if (sh) for (s = 0; s < nseed; s++) free(sh[s].buf);
+    if (trs) for (i = 0; i < k; i++) if (trs[i]) trainer_free(trs[i]);
+    if (nets) for (i = 0; i < k; i++) if (nets[i]) net_free(nets[i]);
+    free(nets); free(trs); free(sh); free(rec); free(out);
+    free(sse_tr); free(sse_he); free(n_tr); free(n_he); free(held); free(srt);
+    return rc;
+}
+
 /* ----------------------------------------------------------- the model file */
 
 static void write_model(void)
@@ -591,8 +953,8 @@ static int score(const char *path, int argc, char **argv, int from)
           raw[hit] = v; given[hit] = 1; }
     }
     if (!grp) { fprintf(stderr, "bpnn: name the group to score, e.g. ./bpnn -c %s A x=3\n", path); return 2; }
-    /* An unnamed term would be scored as zero, which is a value the caller never supplied and
-     * usually not one the group was trained near. Refuse rather than answer a different case. */
+    /* An unnamed term is scored as zero, a value the caller did not supply and usually outside
+     * the range the group was trained on. Refuse instead of answering a different case. */
     { long j, missing = 0;
       for (j = 0; j < nterm; j++) if (!given[j]) missing++;
       if (missing) {
@@ -730,6 +1092,51 @@ static int selftest(void)
     return fail;
 }
 
+static void bytes_out(const char *label, double b)
+{
+    if (b >= 1073741824.0)   printf("  %-22s %.3g GB\n", label, b / 1073741824.0);
+    else if (b >= 1048576.0) printf("  %-22s %.3g MB\n", label, b / 1048576.0);
+    else if (b >= 1024.0)    printf("  %-22s %.3g kB\n", label, b / 1024.0);
+    else                     printf("  %-22s %.0f bytes\n", label, b);
+}
+
+/* What a fit of a given shape costs, printed rather than described. No figure below takes a row
+ * count, which is the property --stream is for. */
+static int footprint(long terms, long groups)
+{
+    double w, net, trainer, per, nets, wins, rowbytes, cachebytes;
+
+    if (terms < 1 || groups < 1) {
+        fprintf(stderr, "bpnn: --footprint takes a term count and a group count, both above 0\n");
+        return 2;
+    }
+    w       = (double)terms * (double)hidden + (double)hidden;        /* weights */
+    net     = (w + (double)hidden + 1.0) * (double)sizeof(smb_real);  /* plus the biases */
+    trainer = net + ((double)hidden + 1.0) * (double)sizeof(smb_real);/* mirrors, plus the betas */
+    per     = net + trainer;
+    nets    = per * (double)groups * (double)nseed + (double)sizeof(Group) * (double)groups;
+    wins    = (double)bufrows * (double)nseed
+              * (2.0 * (double)sizeof(int32_t) + ((double)terms + 1.0) * (double)sizeof(float));
+    rowbytes   = (double)(MAXTERM + 1) * (double)sizeof(double) + (double)sizeof(long);
+    cachebytes = 2.0 * (double)sizeof(int32_t) + ((double)terms + 1.0) * (double)sizeof(float);
+
+    printf("%ld terms, %ld groups, %ld hidden units, %ld refits\n\n",
+           terms, groups, hidden, nseed);
+    printf("fitting with --stream\n");
+    bytes_out("per group per refit", per);
+    bytes_out("networks in total", nets);
+    bytes_out("shuffle windows", wins);
+    bytes_out("total", nets + wins);
+    printf("\nfitting without --stream, add the row store, which does take a row count:\n");
+    bytes_out("per row", rowbytes);
+    printf("\nThe --stream cache is a temporary file of %.0f bytes a row, removed on exit.\n",
+           cachebytes);
+    if (groups > MAXGROUP)
+        printf("\nNote: this build fits at most %d groups, and %ld were asked for.\n",
+               MAXGROUP, groups);
+    return 0;
+}
+
 static void usage(void)
 {
     printf("bpnn -- a backpropagation network for tabular data, where a line is not enough\n\n");
@@ -744,10 +1151,15 @@ static void usage(void)
     printf("  -a NAME     hidden activation: sigmoid, tanh, relu (default tanh)\n");
     printf("  --holdout X fraction of rows kept out of the fit (default %g; 0 disables\n", holdout);
     printf("              it and makes the reported error meaningless as generalization)\n");
+    printf("  --stream    fit without holding the rows in memory: two passes over the\n");
+    printf("              file, then one per epoch over a cache. Different training\n");
+    printf("              order, so different numbers from the default path.\n");
+    printf("  --buffer N  rows in the shuffle window under --stream (default %ld)\n", bufrows);
+    printf("  --footprint TERMS GROUPS   what a fit of that shape costs in memory\n");
 }
 
-/* An option's argument. Junk is refused rather than read as zero: `-H six` used to mean six
- * hidden units to the caller and none to atol. */
+/* An option's argument. Text that is not a number is refused rather than read as zero: to the
+ * caller `-H six` means six hidden units, and to atol it means none. */
 static int optnum(int argc, char **argv, int *i, double *out)
 {
     char *end;
@@ -813,6 +1225,16 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--holdout")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             holdout = v;
+        } else if (!strcmp(argv[i], "--stream")) {
+            streaming = 1;
+        } else if (!strcmp(argv[i], "--buffer")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            bufrows = (long)v;
+        } else if (!strcmp(argv[i], "--footprint")) {
+            double t, n;
+            if (optnum(argc, argv, &i, &t) != 0) return 2;
+            if (optnum(argc, argv, &i, &n) != 0) return 2;
+            return footprint((long)t, (long)n);
         } else if (!strcmp(argv[i], "-a")) {
             if (optstr(argc, argv, &i, &s) != 0) return 2;
             if (!strcmp(s, "sigmoid"))   activation = ACT_SIGMOID;
@@ -842,6 +1264,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "bpnn: --holdout is a fraction of the rows, so it must be in [0, 1).\n"
                         "Use 0 to fit on every row, and read the warning it prints.\n");
         return 2;
+    }
+    if (bufrows < 1) {
+        fprintf(stderr, "bpnn: --buffer is a number of rows and must be at least 1\n");
+        return 2;
+    }
+    if (streaming) {
+        if (fit_stream(path) != 0) { rc = 1; goto out; }
+        write_model();
+        report();
+        goto out;
     }
     if (read_csv(path) != 0) { rc = 1; goto out; }
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }

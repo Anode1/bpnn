@@ -52,7 +52,7 @@ check "and exits 2, not 0"      "$rc" "2"
 out=$("$bin" --help); rc=$?
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "6"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "9"
 
 out=$("$bin" --selftest); rc=$?
 check "--selftest exits 0"      "$rc" "0"
@@ -246,6 +246,62 @@ check "outside it, the term and the distance" \
       "$("$bin" -c "$M" A x=99 | grep -c 'OUTSIDE THE TRAINING RANGE')" "1"
 check "and what that means" \
       "$("$bin" -c "$M" A x=99 | grep -c 'does not extrapolate')" "1"
+
+# ------------------------------------------------------------------- --stream
+# The streaming path fits without holding the rows. It reads the file twice and then once per
+# epoch from a cache, so it must agree with the default path about what the file contains and
+# about what it refuses, and differ from it only in the training order.
+
+"$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s1.txt" 2>"$tmp/sr1.txt"
+check "--stream exits 0"            "$?" "0"
+check "--stream names the response" "$(grep '^response' "$tmp/s1.txt")" "response y"
+check "--stream names the terms"    "$(grep '^terms' "$tmp/s1.txt")" "terms 1 x"
+check "--stream fits the group"     "$(grep -c '^GROUP A' "$tmp/s1.txt")" "1"
+check "--stream reports like the default" \
+      "$(head -1 "$tmp/sr1.txt" | awk '{print $1, $NF}')" "group floor"
+
+"$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s2.txt" 2>/dev/null
+check "--stream repeats byte for byte" "$(cmp -s "$tmp/s1.txt" "$tmp/s2.txt" && echo same)" "same"
+
+# Different training order, so a different model. Both paths are deterministic; neither is the
+# other's approximation.
+check "--stream is not the default path" \
+      "$(cmp -s "$tmp/s1.txt" "$tmp/m1.txt" && echo same || echo differs)" "differs"
+
+# The window is a number of rows and the refusals are the reader's, unchanged.
+badopt "a zero buffer" "bpnn: --buffer is a number of rows and must be at least 1" \
+       -t "$tmp/ok.csv" --stream --buffer 0
+printf 'group,y,x\nA,1,1\nA,2,nan\n' > "$tmp/bad.csv"
+set +e
+out=$("$bin" -t "$tmp/bad.csv" $FAST --stream 2>&1 >/dev/null); rc=$?
+set -e
+check "--stream refuses a nan too" "$(firstline "$out")" \
+      "bpnn: the term 'x' is 'nan' on line 3. A nan or an infinity reaches every"
+check "--stream refuses a nan too, exit" "$rc" "1"
+
+# A window smaller than the file, on a file sorted by the response, trains on nearly the file's
+# own order. That is worth a warning rather than a quietly worse fit.
+{ echo 'group,y,x'; i=0; while [ $i -lt 40 ]; do echo "A,$i,$i"; i=$((i+1)); done; } > "$tmp/sorted.csv"
+out=$("$bin" -t "$tmp/sorted.csv" $FAST --stream --buffer 4 2>&1 >/dev/null)
+check "a sorted file with a small window is reported" \
+      "$(printf '%s' "$out" | grep -c 'is sorted by y, or nearly so')" "1"
+out=$("$bin" -t "$tmp/sorted.csv" $FAST --stream --buffer 1000 2>&1 >/dev/null)
+check "and not when the window holds the file" \
+      "$(printf '%s' "$out" | grep -c 'is sorted by y, or nearly so' || true)" "0"
+
+# --footprint answers about a shape, not about a file, so it takes no data and reads none.
+check "--footprint prints a total" \
+      "$("$bin" --footprint 24 400 | grep -c '^  total ')" "1"
+check "--footprint says what a row costs the default path" \
+      "$("$bin" --footprint 24 400 | grep -c '^  per row ')" "1"
+check "--footprint names the group ceiling when it is passed" \
+      "$("$bin" --footprint 24 400000 | grep -c 'this build fits at most 512 groups')" "1"
+set +e
+out=$("$bin" --footprint 24 0 2>&1 >/dev/null); rc=$?
+set -e
+check "--footprint refuses a zero count" "$(firstline "$out")" \
+      "bpnn: --footprint takes a term count and a group count, both above 0"
+check "--footprint refuses a zero count, exit" "$rc" "2"
 
 # --------------------------------------------------- numerics, not just parsing
 # A suite whose inputs are all around 1 is not a test of numerics. These three cases are the
