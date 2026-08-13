@@ -204,7 +204,7 @@ static int scan_ranges(const char *path, long *sorted_runs, long *sorted_steps)
         nrow++;
     }
     if (r != 0) goto done;
-    for (i = 0; i < ngroup; i++) range_done(&gp[i]);
+    for (i = 0; i < ngroup; i++) { range_done(&gp[i]); gp[i].gysd = gp[i].ysd; }
     rc = 0;
 done:
     free(prev);
@@ -261,7 +261,7 @@ int fit_stream(const char *path)
     Shuf          *sh = NULL;
     unsigned char *rec = NULL, *out = NULL;
     double        *sse_tr = NULL, *sse_he = NULL, *held = NULL, *srt = NULL;
-    double        *sse_st = NULL, *bestv = NULL;
+    double        *sse_st = NULL, *bestv = NULL, *ysum_he = NULL, *ysq_he = NULL;
     long          *n_tr = NULL, *n_he = NULL, *n_st = NULL, *since = NULL, *ran = NULL;
     long          *n_best = NULL;
     Net          **bests = NULL;
@@ -275,7 +275,13 @@ int fit_stream(const char *path)
 
     /* With --cache, the two setup passes are skipped whenever the named file already describes
      * this input. Without it, the cache is a temporary file and the passes always run. */
-    if (cachepath && stamp_of(path, &stamp) == 0) {
+    if (cachepath && stamp_of(path, &stamp) != 0) {
+        fprintf(stderr, "bpnn: --cache needs a named input file to key the cache on; reading\n"
+                        "from %s cannot be checked for staleness later.\n",
+                strcmp(path, "-") ? path : "standard input");
+        return -1;
+    }
+    if (cachepath) {
         cache = fopen(cachepath, "rb");
         if (cache) {
             if (cache_get_header(cache, cachepath, &stamp, &sorted_runs, &sorted_steps) == 0)
@@ -303,6 +309,8 @@ int fit_stream(const char *path)
     n_tr   = calloc((size_t)k, sizeof *n_tr);
     n_he   = calloc((size_t)k, sizeof *n_he);
     sse_st = calloc((size_t)k, sizeof *sse_st);
+    ysum_he = calloc((size_t)k, sizeof *ysum_he);
+    ysq_he  = calloc((size_t)k, sizeof *ysq_he);
     n_st   = calloc((size_t)k, sizeof *n_st);
     bestv  = calloc((size_t)k, sizeof *bestv);
     n_best = calloc((size_t)k, sizeof *n_best);
@@ -318,7 +326,8 @@ int fit_stream(const char *path)
     out    = malloc(rs);
     if (!nets || !trs || !sse_tr || !sse_he || !n_tr || !n_he || !held || !srt || !sh
         || !rec || !out || !sse_st || !n_st || !bestv || !n_best || !since || !ran || !done
-        || !bests || !nojudge) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+        || !bests || !nojudge || !ysum_he || !ysq_he) {
+        fprintf(stderr, "bpnn: out of memory\n"); goto done; }
 
     for (s = 0; s < nseed; s++) {
         sh[s].buf = malloc((size_t)bufrows * rs);
@@ -364,6 +373,13 @@ int fit_stream(const char *path)
     first = ftell(cache);
     if (first < 0) { fprintf(stderr, "bpnn: cannot seek the row cache\n"); goto done; }
     if (!reused && pack_cache(path, cache) != 0) goto done;
+    refit_open();          /* after the scan, so the stamp can carry the shape of the data */
+    /* The header is checked against the input; the records are not checked against anything, and
+     * a record's group indexes the network, trainer and group arrays. A truncated or edited
+     * cache would otherwise reach trainer_learn through a wild pointer. */
+#define CACHE_BAD()  do { fprintf(stderr, "bpnn: %s is damaged; delete it and it will be " \
+                                          "rebuilt\n", cachepath ? cachepath : "the row cache"); \
+                          goto done; } while (0)
 
     for (e = 0; e < epochs; e++) {
         if (fseek(cache, first, SEEK_SET) != 0) goto done;
@@ -373,6 +389,7 @@ int fit_stream(const char *path)
                     int32_t g, ord;
                     memcpy(&g, out, sizeof g);
                     memcpy(&ord, out + sizeof g, sizeof ord);
+                    if (g < 0 || g >= ngroup || ord < 0) CACHE_BAD();
                     if (done[(long)g * nseed + s] != 1 && rowrole(g, ord, s) == ROLE_TRAIN)
                         (void)trainer_learn(trs[(long)g * nseed + s],
                                             (const smb_real *)(void *)(out + REC_HEAD),
@@ -385,6 +402,7 @@ int fit_stream(const char *path)
                 int32_t g, ord;
                 memcpy(&g, out, sizeof g);
                 memcpy(&ord, out + sizeof g, sizeof ord);
+                if (g < 0 || g >= ngroup || ord < 0) CACHE_BAD();
                 if (done[(long)g * nseed + s] != 1 && rowrole(g, ord, s) == ROLE_TRAIN)
                     (void)trainer_learn(trs[(long)g * nseed + s],
                                         (const smb_real *)(void *)(out + REC_HEAD),
@@ -406,6 +424,7 @@ int fit_stream(const char *path)
                 memcpy(&g, rec, sizeof g);
                 memcpy(&ord, rec + sizeof g, sizeof ord);
                 memcpy(&t, rec + REC_HEAD + (size_t)nterm * sizeof t, sizeof t);
+                if (g < 0 || g >= ngroup || ord < 0 || !isfinite((double)t)) CACHE_BAD();
                 y = unscale_out(&gp[g], (double)t);
                 for (s = 0; s < nseed; s++) {
                     long at = (long)g * nseed + s;
@@ -450,13 +469,15 @@ int fit_stream(const char *path)
         memcpy(&g, rec, sizeof g);
         memcpy(&ord, rec + sizeof g, sizeof ord);
         memcpy(&t, rec + REC_HEAD + (size_t)nterm * sizeof t, sizeof t);
+        if (g < 0 || g >= ngroup || ord < 0 || !isfinite((double)t)) CACHE_BAD();
         y = unscale_out(&gp[g], (double)t);
         for (s = 0; s < nseed; s++) {
             long at = (long)g * nseed + s;
             double p = unscale_out(&gp[g],
                 (double)net_forward(nets[at], (const smb_real *)(void *)(rec + REC_HEAD))[0]);
             switch (rowrole(g, ord, s)) {
-            case ROLE_REPORT: sse_he[at] += (p - y) * (p - y); n_he[at]++; break;
+            case ROLE_REPORT: sse_he[at] += (p - y) * (p - y); n_he[at]++;
+                              ysum_he[at] += y; ysq_he[at] += y * y; break;
             case ROLE_TRAIN:  sse_tr[at] += (p - y) * (p - y); n_tr[at]++; break;
             default: break;                       /* a stop row is in neither figure */
             }
@@ -481,16 +502,23 @@ int fit_stream(const char *path)
             long at = i * nseed + s;
             /* No fallback to the training error under a column headed held-out: a refit with
              * no reported rows cannot be scored, and the group is dropped below. */
-            if (n_he[at] < 1) { nohold = 1; break; }
-            held[s] = sqrt(sse_he[at] / (double)n_he[at]);
+            /* With --holdout 0 there are no reported rows by construction, not by an unlucky
+             * split, and the training error stands in; report() warns that it has. */
+            if (holdout <= 0) {
+                if (n_tr[at] < 1) { nohold = 1; break; }
+                held[s] = sqrt(sse_tr[at] / (double)n_tr[at]);
+            } else {
+                if (n_he[at] < 1) { nohold = 1; break; }
+                held[s] = sqrt(sse_he[at] / (double)n_he[at]);
+            }
             if (s == 0 || held[s] < g->best_held) g->best_held = held[s];
             m += held[s];
             srt[s] = held[s];
         }
         if (nohold) {
-            fprintf(stderr, "bpnn: group %s had a refit with no rows left to report on. With\n"
-                            "%ld rows and --holdout %g the split cannot be made; the group is\n"
-                            "not fitted.\n", g->name, g->n, holdout);
+            fprintf(stderr, "bpnn: group %s had a refit with no rows to score on at all. With\n"
+                            "%ld rows and --holdout %g the split leaves a refit empty; the group\n"
+                            "is not fitted.\n", g->name, g->n, holdout);
             continue;
         }
         m /= (double)nseed;
@@ -503,15 +531,35 @@ int fit_stream(const char *path)
         nets[i * nseed + med] = NULL;
         g->held_rmse = m;                  /* the mean; see fit.c */
         g->shipped_held = held[med];
-        g->train_rmse = sqrt(sse_tr[i * nseed + med] / (double)n_tr[i * nseed + med]);
+        g->train_rmse = n_tr[i * nseed + med] > 0
+                        ? sqrt(sse_tr[i * nseed + med] / (double)n_tr[i * nseed + med]) : 0.0;
         g->nheld = n_he[i * nseed + med];
         g->nseed = nseed;
         g->epochs_ran = ran[i * nseed + med] ? ran[i * nseed + med] : epochs;
-        refit_group(g, held, NULL);
-        {   /* the spread of the reported rows, for the variance explained */
-            double q = sse_he[i * nseed + med];
-            (void)q;
-            g->hsd = g->ysd;   /* stream path: per-row roles are not retained past this pass */
+        {   /* per-refit training error and epoch count, both of which this path has */
+            double *trn = malloc((size_t)nseed * sizeof *trn);
+            long *rn = malloc((size_t)nseed * sizeof *rn);
+            if (trn && rn) {
+                for (s = 0; s < nseed; s++) {
+                    long at = i * nseed + s;
+                    trn[s] = n_tr[at] > 0 ? sqrt(sse_tr[at] / (double)n_tr[at]) : 0.0;
+                    rn[s] = ran[at] ? ran[at] : epochs;
+                }
+                refit_group(g, held, trn, rn);
+            }
+            free(trn); free(rn);
+        }
+        {   /* The spread of the rows the error was measured on, which is what expl divides by.
+             * Using the whole group's spread here made expl a different statistic from the
+             * default path's, and let one extreme row certify a worthless fit. */
+            long at = i * nseed + med;
+            if (n_he[at] > 1) {
+                double mn = ysum_he[at] / (double)n_he[at];
+                double v2 = (ysq_he[at] - (double)n_he[at] * mn * mn) / (double)(n_he[at] - 1);
+                g->hsd = v2 > 0 ? sqrt(v2) : 0.0;
+            } else {
+                g->hsd = g->gysd;
+            }
         }
     }
 
@@ -532,7 +580,7 @@ done:
     if (nets) for (i = 0; i < k; i++) if (nets[i]) net_free(nets[i]);
     free(nets); free(trs); free(bests); free(sh); free(rec); free(out);
     free(sse_tr); free(sse_he); free(n_tr); free(n_he); free(held); free(srt);
-    free(sse_st); free(n_st); free(bestv); free(n_best); free(since); free(ran); free(done);
+    free(ysum_he); free(ysq_he); free(sse_st); free(n_st); free(bestv); free(n_best); free(since); free(ran); free(done);
     free(nojudge);
     return rc;
 }

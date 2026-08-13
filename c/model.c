@@ -8,6 +8,7 @@
 #include <math.h>
 
 #include "tab.h"
+#include "act.h"
 
 void write_model(void)
 {
@@ -55,56 +56,106 @@ int read_model(const char *path)
     FILE *f = fopen(path, "r");
     char line[LINELEN];
     Group *g = NULL;
-    long ri = 0;
+    long ri = 0, lineno = 0, nfilled = 0;
     size_t l = 1, wi = 0, bi = 0;
+    int rc = -1;
+
     if (!f) { fprintf(stderr, "bpnn: cannot open %s\n", path); return -1; }
     while (fgets(line, sizeof line, f)) {
+        lineno++;
         if (line[0] == '#') continue;
         if (!strncmp(line, "response ", 9)) {
-            sscanf(line + 9, "%63s", response);
+            if (sscanf(line + 9, "%63s", response) != 1) goto bad;
         } else if (!strncmp(line, "terms ", 6)) {
-            char *p = line + 6; long j;
-            nterm = strtol(p, &p, 10);
-            if (nterm < 1 || nterm > MAXTERM) { fclose(f); return -1; }
-            for (j = 0; j < nterm; j++) { while (*p == ' ') p++; sscanf(p, "%63s", term[j]);
-                                          while (*p && *p != ' ') p++; }
+            char *p = line + 6, *end; long j;
+            nterm = strtol(p, &end, 10);
+            if (end == p || nterm < 1 || nterm > MAXTERM) goto bad;
+            p = end;
+            for (j = 0; j < nterm; j++) {
+                while (*p == ' ') p++;
+                if (sscanf(p, "%63s", term[j]) != 1) goto bad;
+                while (*p && *p != ' ') p++;
+            }
         } else if (!strncmp(line, "GROUP ", 6)) {
             char nm[NAMELEN];
             long gi;
-            if (sscanf(line + 6, "%63s", nm) != 1) { fclose(f); return -1; }
+            if (nterm < 1) goto bad;                  /* GROUP before terms */
+            if (sscanf(line + 6, "%63s", nm) != 1) goto bad;
             gi = group_of(nm);
-            if (gi < 0) { fclose(f); return -1; }     /* more groups than the build holds */
+            if (gi < 0) goto bad;                     /* more groups than the build holds */
             g = &gp[gi];
             ri = 0; l = 1; wi = bi = 0;
         } else if (g && !strncmp(line, "diag ", 5)) {
-            sscanf(line + 5, "train=%lf held=%lf sd=%lf",
-                   &g->train_rmse, &g->held_rmse, &g->run_sd);
+            /* Scanned by key, not by position: a positional format silently stopped at the
+             * first field this writer added and left every later one at zero. */
+            char *p;
+            if ((p = strstr(line, "train=")))   g->train_rmse   = atof(p + 6);
+            if ((p = strstr(line, "held=")))    g->held_rmse    = atof(p + 5);
+            if ((p = strstr(line, "shipped="))) g->shipped_held = atof(p + 8);
+            if ((p = strstr(line, "sd=")))      g->run_sd       = atof(p + 3);
+            if ((p = strstr(line, "best=")))    g->best_held    = atof(p + 5);
         } else if (g && !strncmp(line, "target ", 7)) {
-            sscanf(line + 7, "%lf %lf", &g->tlo, &g->thi);
+            if (sscanf(line + 7, "%lf %lf", &g->tlo, &g->thi) != 2) goto bad;
+            if (!isfinite(g->tlo) || !isfinite(g->thi) || g->thi <= g->tlo) goto bad;
         } else if (g && !strncmp(line, "range ", 6)) {
-            if (ri < nterm) sscanf(line + 6, "%lf %lf", &g->lo[ri], &g->hi[ri]);
+            if (ri >= nterm) goto bad;                /* more ranges than terms */
+            if (sscanf(line + 6, "%lf %lf", &g->lo[ri], &g->hi[ri]) != 2) goto bad;
+            if (!isfinite(g->lo[ri]) || !isfinite(g->hi[ri]) || g->hi[ri] <= g->lo[ri]) goto bad;
             ri++;
         } else if (g && !strncmp(line, "net ", 4)) {
-            size_t nl, dims[SMB_MAX_LAYERS]; int act; char *p = line + 4; size_t i;
-            nl = (size_t)strtol(p, &p, 10);
-            act = (int)strtol(p, &p, 10);
-            if (nl < 2 || nl > SMB_MAX_LAYERS) { fclose(f); return -1; }
-            for (i = 0; i < nl; i++) dims[i] = (size_t)strtol(p, &p, 10);
-            g->net = net_new(dims, nl);
-            if (!g->net) { fclose(f); return -1; }
-            g->net->activation = act;
+            size_t dims[SMB_MAX_LAYERS], i;
+            long nl, act, d;
+            char *p = line + 4, *end;
+            if (g->net) goto bad;                     /* two net lines for one group */
+            nl = strtol(p, &end, 10); if (end == p) goto bad; p = end;
+            act = strtol(p, &end, 10); if (end == p) goto bad; p = end;
+            if (nl < 2 || nl > SMB_MAX_LAYERS) goto bad;
+            if (act < 0 || act > 2) goto bad;
+            for (i = 0; i < (size_t)nl; i++) {
+                d = strtol(p, &end, 10);
+                if (end == p) goto bad;               /* fewer widths than the layer count */
+                p = end;
+                /* A width is the size of a buffer the forward pass writes into. Unchecked, a
+                 * model file chooses that size: 4000 inputs overran the caller's stack. */
+                if (d < 1 || d > MAXTERM * 16) goto bad;
+                dims[i] = (size_t)d;
+            }
+            if (dims[0] != (size_t)nterm || dims[nl - 1] != 1) goto bad;
+            g->net = net_new(dims, (size_t)nl);
+            if (!g->net) goto bad;
+            g->net->activation = (int)act;
             l = 1; wi = bi = 0;
         } else if (g && g->net && line[0] == 'w' && line[1] == ' ') {
+            char *end;
+            double v = strtod(line + 2, &end);
+            if (end == line + 2 || !isfinite(v)) goto bad;
             while (l < g->net->nlayers && wi >= net_layer_wsize(g->net, l)) { l++; wi = bi = 0; }
-            if (l < g->net->nlayers) g->net->w[l][wi++] = (smb_real)atof(line + 2);
+            if (l >= g->net->nlayers) goto bad;       /* more weights than the shape holds */
+            g->net->w[l][wi++] = (smb_real)v;
         } else if (g && g->net && line[0] == 'b' && line[1] == ' ') {
-            if (l < g->net->nlayers && bi < net_layer_bsize(g->net, l)) {
-                g->net->b[l][bi++] = (smb_real)atof(line + 2);
-                if (bi >= net_layer_bsize(g->net, l)) { l++; wi = bi = 0; }
-            }
+            char *end;
+            double v = strtod(line + 2, &end);
+            if (end == line + 2 || !isfinite(v)) goto bad;
+            if (l >= g->net->nlayers || bi >= net_layer_bsize(g->net, l)) goto bad;
+            g->net->b[l][bi++] = (smb_real)v;
+            if (bi >= net_layer_bsize(g->net, l)) { l++; wi = bi = 0; }
+        } else if (g && g->net && !strncmp(line, "END", 3)) {
+            /* Every weight and bias must have arrived. net_new mallocs the weight arrays, so a
+             * short model would otherwise be scored from whatever was in that memory, giving a
+             * different answer per run. */
+            if (l != g->net->nlayers) goto bad;
+            if (ri != nterm) goto bad;
+            nfilled++;
+            g = NULL;
         }
     }
+    if (ferror(f)) goto bad;
+    if (nfilled < 1) goto bad;
+    rc = 0;
+bad:
+    if (rc != 0)
+        fprintf(stderr, "%s:%ld: this is not a usable bpnn model\n", path, lineno);
     fclose(f);
-    return ngroup > 0 ? 0 : -1;
+    return rc;
 }
 

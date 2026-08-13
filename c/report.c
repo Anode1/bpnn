@@ -27,18 +27,23 @@ void refit_open(void)
     }
     fprintf(refitf, "# bpnn per-refit held-out errors\n");
     fprintf(refitf, "# pairstat --paired A B compares two of these on matched refits.\n");
-    fprintf(refitf, "PAIRING split=1000+7919s init=1+104729s refits=%ld holdout=%g patience=%ld\n",
-            nseed, holdout, patience);
+    /* Everything two runs must share for refit s of each to have seen the same rows in the same
+     * roles. The path matters: --stream splits by a hash, the default path by Fisher-Yates, so
+     * the two are not paired with each other even at identical options. */
+    fprintf(refitf, "PAIRING path=%s refits=%ld holdout=%g patience=%ld terms=%ld groups=%ld "
+                    "rows=%ld response=%s\n",
+            streaming ? "stream" : "default", nseed, holdout, patience, nterm, ngroup, nrow,
+            response);
     fprintf(refitf, "# group refit held train epochs\n");
 }
 
-void refit_group(const Group *g, const double *held, const long *ran)
+void refit_group(const Group *g, const double *held, const double *train, const long *ran)
 {
     long s;
     if (!refitf) return;
     for (s = 0; s < nseed; s++)
         fprintf(refitf, "REFIT %s %ld %.9g %.9g %ld\n",
-                g->name, s, held[s], g->train_rmse, ran ? ran[s] : 0);
+                g->name, s, held[s], train ? train[s] : 0.0, ran ? ran[s] : 0);
 }
 
 void refit_close(void)
@@ -57,8 +62,12 @@ void report(void)
         Group *g = &gp[i];
         long nw, ntr;
         if (!g->net) continue;
-        nw = (long)net_nweights(g->net);
-        ntr = g->n - g->nheld;
+        /* Every fitted number, biases included: net_nweights counts only the weights, and the
+         * advisory below is offered as the degrees-of-freedom check a network does not have. */
+        nw = (long)net_nweights(g->net) + (long)g->net->dim[1] + (long)g->net->dim[2];
+        /* The stopping rows are not trained on either. */
+        ntr = g->n - g->nheld - (patience > 0 ? g->nheld : 0);
+        if (ntr < 1) ntr = g->n - g->nheld;
         if (!isfinite(g->held_rmse) || !isfinite(g->train_rmse)) {
             fprintf(stderr, "%-10s %6ld %6ld %8ld %7ld   DIVERGED: the weights left the range of a\n"
                             "  number. The learning rate (-r %g), the momentum (-m %g) or the decay\n"
@@ -86,7 +95,7 @@ void report(void)
                             "  scores %.4g and this model scores %.4g, so it is barely using its\n"
                             "  inputs. Try more hidden units (-H), a longer run (-e), or less\n"
                             "  --decay; or the relation may not be in these columns.\n",
-                    100.0 * explained(g), response, g->ysd, g->held_rmse);
+                    100.0 * explained(g), response, g->gysd, g->held_rmse);
         if (g->tail > 20.0)
             fprintf(stderr, "  %s REACHES %.0f INTERQUARTILE RANGES past its own quartiles in this\n"
                             "  group. The target is scaled by its smallest and largest value, so\n"

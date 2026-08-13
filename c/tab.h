@@ -38,6 +38,7 @@ typedef struct {
     double lo[MAXTERM], hi[MAXTERM]; /* per-term training range */
     double tlo, thi;                 /* response range */
     double ymean, ym2, ysd;          /* Welford state, then the response's own spread */
+    double gysd;                     /* ysd over the WHOLE group, which the advisories quote */
     double hsd;                      /* spread of the response over the reported rows only */
     Net   *net;
     double train_rmse, held_rmse, run_sd, best_held, shipped_held;
@@ -105,7 +106,7 @@ int  fit_stream(const char *path);  /* stream.c */
 void write_model(void);         /* model.c  */
 int  read_model(const char *path);
 void refit_open(void);          /* report.c */
-void refit_group(const Group *g, const double *held, const long *ran);
+void refit_group(const Group *g, const double *held, const double *train, const long *ran);
 void refit_close(void);
 void report(void);
 int  footprint(long terms, long groups);

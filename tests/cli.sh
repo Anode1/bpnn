@@ -164,7 +164,8 @@ check "an over-long group name" "$(firstline "$out")" \
       "$tmp/long.csv:2:1: the group is longer than 63 characters: '$long'"
 
 # Comments and blank lines are ordinary, not errors.
-printf '# a note\n\ngroup,y,x\n# another\nA,1,1\nA,2,2\nA,3,3\nA,4,4\nA,5,5\n' > "$tmp/cmt.csv"
+{ printf '# a note\n\ngroup,y,x\n# another\n'
+  i=1; while [ $i -le 30 ]; do echo "A,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/cmt.csv"
 set +e
 "$bin" -t "$tmp/cmt.csv" $FAST >/dev/null 2>&1; rc=$?
 set -e
@@ -259,7 +260,7 @@ badscore "two group names"    "bpnn: two group names given, 'A' and 'B'" A B x=1
 set +e
 out=$("$bin" -c "$tmp/ok.csv" A x=1 2>&1 >/dev/null); rc=$?
 set -e
-check "a CSV offered as a model" "$(firstline "$out")" "bpnn: $tmp/ok.csv is not a bpnn model"
+check "a CSV offered as a model" "$(firstline "$out")" "$tmp/ok.csv:41: this is not a usable bpnn model"
 check "a CSV offered as a model exits 1" "$rc" "1"
 
 # The extrapolation check: inside the training range it stays quiet, outside it does not.
@@ -463,9 +464,11 @@ check "and not as %g's six digits would print it" \
 
 # Two columns that differ in the sixth decimal: the fit must not produce a nan or refuse.
 { echo 'group,y,x1,x2'
-  i=1; while [ $i -le 12 ]; do
+  i=1; while [ $i -le 30 ]; do
       echo "A,$((i*3+1)),$i,$i.000001"; i=$((i+1)); done; } > "$tmp/coll.csv"
+set +e
 out=$("$bin" -t "$tmp/coll.csv" $FAST 2>&1 >/dev/null); rc=$?
+set -e
 check "near-identical columns still fit" "$rc" "0"
 check "and produce no nan"               "$(printf '%s' "$out" | grep -ci nan || true)" "0"
 

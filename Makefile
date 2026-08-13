@@ -101,6 +101,16 @@ tools: $(TOOLS)
 $(TOOLS): %: validation/%.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 
+# The binary, and the example data it names in its own messages.
+install: $(PROG)
+	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/bpnn/example
+	cp $(PROG) $(DESTDIR)$(PREFIX)/bin/
+	cp example/*.csv $(DESTDIR)$(PREFIX)/share/bpnn/example/
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(PROG)
+	rm -rf $(DESTDIR)$(PREFIX)/share/bpnn
+
 clean:
 	rm -f c/*.o c/*.d $(PROG) $(WORKER) $(TOOLS) \
 	      bpnn_ut bpnn_ut_asan bpnn_ut_ubsan bpnn_asan bpnn_ubsan

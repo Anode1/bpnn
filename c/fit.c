@@ -117,13 +117,17 @@ int fit_group(Group *g)
     long *ord = malloc((size_t)g->n * sizeof *ord);
     double *held = malloc((size_t)nseed * sizeof *held);
     double *srt = malloc((size_t)nseed * sizeof *srt);
+    double *trn = malloc((size_t)nseed * sizeof *trn);
     long *ran = calloc((size_t)nseed, sizeof *ran);
     Net **nets = calloc((size_t)nseed, sizeof *nets);
     long i, s, ntr, nstop, med = 0;
     double m = 0, v = 0, mid;
     int rc = -1;
-    if (!ord || !held || !srt || !nets || !ran) goto done;
+    if (!ord || !held || !srt || !nets || !ran || !trn) goto done;
     ranges(g);
+    /* ranges_of() below recomputes ysd and flat from a training subset. The advisories quote
+     * the group's own spread, so keep it before the refits overwrite it. */
+    g->gysd = g->ysd;
     /* The target is mapped onto the sigmoid's band by its MINIMUM and MAXIMUM, so one extreme
      * row compresses every other row into a sliver of that band and the network can no longer
      * tell them apart. Measured against the quartiles, which one row cannot move. */
@@ -176,6 +180,7 @@ int fit_group(Group *g)
         if (!nets[s]) goto done;
         held[s] = g->nheld > 0 ? rmse(g, nets[s], ord, nstop, g->n) : rmse(g, nets[s], ord, 0, ntr);
         if (held[s] < 0) goto done;
+        trn[s] = rmse(g, nets[s], ord, 0, ntr);      /* this refit's own training error */
         if (s == 0 || held[s] < g->best_held) g->best_held = held[s];
         if (s == 0) g->train_rmse = rmse(g, nets[s], ord, 0, ntr);
     }
@@ -198,7 +203,7 @@ int fit_group(Group *g)
     g->shipped_held = held[med];
     g->nseed = nseed;
     g->epochs_ran = ran[med];
-    refit_group(g, held, ran);
+
     /* The denominator of the variance explained has to be the spread of the same rows the
      * numerator was measured on. Over all the group's rows instead, one extreme value inflates
      * it and the ratio certifies a destroyed fit as perfect. */
@@ -226,10 +231,11 @@ int fit_group(Group *g)
         ranges_of(g, ord, 0, ntr);
         g->train_rmse = rmse(g, g->net, ord, 0, ntr);
     }
+    refit_group(g, held, trn, ran);
     rc = 0;
 done:
     for (s = 0; s < nseed; s++) if (nets && nets[s]) net_free(nets[s]);
-    free(ord); free(held); free(srt); free(nets); free(ran);
+    free(ord); free(held); free(srt); free(nets); free(ran); free(trn);
     return rc;
 }
 

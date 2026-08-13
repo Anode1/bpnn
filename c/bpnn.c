@@ -41,14 +41,6 @@
 /* Below this a group cannot be split into a fit, a stopping check and a reported sample of a
  * size worth printing: at 4 rows the reported error was one row and the floor beside it was ten
  * times the error it bounded. */
-#define MAXTERM   64
-#define MAXGROUP  512
-#define NAMELEN   64
-#define LINELEN   SMB_LINE_MAX
-#define Z95       1.959964
-/* Target band for the sigmoid output. 0 and 1 are unreachable and just saturate. */
-#define TLO       0.1
-#define THI       0.9
 
 /* ------------------------------------------------------------------- score  */
 
@@ -341,6 +333,14 @@ static int optstr(int argc, char **argv, int *i, const char **out)
     return 0;
 }
 
+/* Did any group produce a network? A model file with none is written, and was exiting 0. */
+static int fitted_any(void)
+{
+    long i;
+    for (i = 0; i < ngroup; i++) if (gp[i].net) return 1;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int i, mode = 0, first = 0;
@@ -465,7 +465,6 @@ int main(int argc, char **argv)
                         "nothing to cache.\n");
         return 2;
     }
-    refit_open();
     if (streaming) {
         if (fit_stream(path) != 0) { rc = 1; goto out; }
         write_model();
@@ -473,6 +472,7 @@ int main(int argc, char **argv)
         goto out;
     }
     if (read_csv(path) != 0) { rc = 1; goto out; }
+    refit_open();
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
     if (regroup() != 0) { rc = 1; goto out; }
     for (g = 0; g < ngroup; g++) {
@@ -491,6 +491,13 @@ int main(int argc, char **argv)
     }
     write_model();
     report();
+    rc = fitted_any() ? 0 : 1;
+    /* A model nobody can score from is not a success, and a short write is not one either:
+     * ./bpnn -t data.csv > /dev/full exited 0 with a truncated model. */
+    if (fflush(stdout) != 0 || ferror(stdout)) {
+        fprintf(stderr, "bpnn: writing the model failed\n");
+        rc = 1;
+    }
 out:
     refit_close();
     for (g = 0; g < ngroup; g++) if (gp[g].net) net_free(gp[g].net);
