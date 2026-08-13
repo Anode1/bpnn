@@ -47,11 +47,11 @@ lin_shape() {
 bpnn_run() {
     f=$1; shift
     ./bpnn -t "$f" "$@" >/dev/null 2>"$TMP/b"
-    # only the per-group data rows: they start in column 1 and carry exactly 8 fields. The
+    # only the per-group data rows: they start in column 1 and carry exactly 9 fields. The
     # advisory lines beneath them are indented and hold percentages, which is a trap worth
     # naming: matched loosely, "36% of the error" reads as an RMSE of 36.
-    awk '/^[^ \t]/ && NF==8 && $1!="group" {
-             if ($6+0>h) h=$6+0; if ($7+0>s) s=$7+0 }
+    awk '/^[^ \t]/ && NF==9 && $1!="group" {
+             if ($7+0>h) h=$7+0; if ($8+0>s) s=$8+0 }
          END{ printf "%.4g %.4g", h, s }' "$TMP/b"
 }
 

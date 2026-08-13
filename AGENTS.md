@@ -42,7 +42,7 @@ Do not change behaviour without changing these first.
     make            # build ./bpnn and ./bpnn_worker
     make check      # ut + cliut -- the commit gate
     make ut         # unit suite, 32 checks
-    make cliut      # black-box, 91 checks: the built binary through a shell
+    make cliut      # black-box, 120 checks: the built binary through a shell
     make ut-asan    # both suites under AddressSanitizer
     make ut-ubsan   # both suites under UBSan
     make pedantic   # -pedantic plus -Wextra -Wshadow -Wconversion; must be clean
@@ -197,9 +197,13 @@ order, because each step is the ground the next one stands on:
 3. ~~**Streaming.**~~ Done as `--stream`, with `--footprint` and `scripts/scale.sh`. Measured over a
    tenfold increase in rows: 7.2 MB to 8.7 MB streaming, against 53 MB to 514 MB holding them. The
    rise is the shuffle window filling and stopping at `--buffer`. Points 1 to 4 of the section above
-   are implemented; point 5 is not. Epochs are still a fixed count, so a large file costs
-   epochs x rows of I/O with no early stop, and the CSV is re-parsed on both of the first two passes
-   rather than cached across runs.
+   are implemented. Point 5 is half done: -e is a ceiling on the default path, where the fit stops
+   when the rows kept back for it stop improving, but --stream still runs every epoch and says so,
+   and the CSV is re-parsed on both setup passes rather than cached across runs.
+
+   Early stopping on the streaming path needs the stop rows evaluated inside the training pass,
+   since they are already being skipped there, and a second hash bit to divide the held rows into
+   a stop half and a reported half. That is the next piece.
 4. **Real data.** The 24-term length-of-stay shape from linearr's example data is the target; FSDD
    (`data/fsdd/PROVENANCE.md`) is the non-tabular check the engine already has paths for.
 5. **A classifier**, which needs more than one output and a softmax with cross-entropy. Not before the

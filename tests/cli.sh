@@ -52,7 +52,7 @@ check "and exits 2, not 0"      "$rc" "2"
 out=$("$bin" --help); rc=$?
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "9"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "10"
 
 out=$("$bin" --selftest); rc=$?
 check "--selftest exits 0"      "$rc" "0"
@@ -247,6 +247,34 @@ check "outside it, the term and the distance" \
 check "and what that means" \
       "$("$bin" -c "$M" A x=99 | grep -c 'does not extrapolate')" "1"
 
+# ---------------------------------------------------------------- --patience
+# -e is a ceiling. The fit stops when the rows kept back for the purpose stop improving, and the
+# epochs column says where it stopped.
+
+{ echo 'group,y,dose'
+  i=0; while [ $i -lt 200 ]; do
+      d=$((i % 40)); echo "A,$((12 * d / (2 + d) + i % 3)),$d"; i=$((i+1)); done; } > "$tmp/stop.csv"
+
+epochs_used() { "$bin" -t "$tmp/stop.csv" "$@" 2>&1 >/dev/null | awk '$1=="A"{print $5}'; }
+used=$(epochs_used -e 3000 -s 2)
+check "the fit stops before the ceiling" "$([ "$used" -lt 3000 ] && echo yes)" "yes"
+check "--patience 0 runs every epoch"    "$(epochs_used -e 200 -s 2 --patience 0)" "200"
+check "the epochs column is in the report" \
+      "$("$bin" -t "$tmp/stop.csv" $FAST 2>&1 >/dev/null | head -1 | awk '{print $5}')" "epochs"
+
+# Half the held-out rows decide when to stop, so the reported count is the other half. With the
+# check off, every held-out row is reported.
+held_count() { "$bin" -t "$tmp/stop.csv" "$@" 2>&1 >/dev/null | awk '$1=="A"{print $3}'; }
+check "stopping costs half the reported held-out rows" "$(held_count -e 100 -s 2)" "25"
+check "and --patience 0 reports all of them"           "$(held_count -e 100 -s 2 --patience 0)" "50"
+
+# Too few rows to split: the fit runs its full epochs rather than stopping on three rows.
+check "a tiny group runs the full epochs" \
+      "$("$bin" -t "$tmp/ok.csv" -e 70 -s 2 2>&1 >/dev/null | awk '$1=="A"{print $5}')" "70"
+
+badopt "a non-numeric --patience" "bpnn: --patience six is not a number" \
+       -t "$tmp/ok.csv" --patience six
+
 # ------------------------------------------------------------------- --stream
 # The streaming path fits without holding the rows. It reads the file twice and then once per
 # epoch from a cache, so it must agree with the default path about what the file contains and
@@ -254,11 +282,13 @@ check "and what that means" \
 
 "$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s1.txt" 2>"$tmp/sr1.txt"
 check "--stream exits 0"            "$?" "0"
+check "--stream says --patience does not apply to it" \
+      "$(head -1 "$tmp/sr1.txt")" "bpnn: --stream runs every one of the 50 epochs; --patience is not"
 check "--stream names the response" "$(grep '^response' "$tmp/s1.txt")" "response y"
 check "--stream names the terms"    "$(grep '^terms' "$tmp/s1.txt")" "terms 1 x"
 check "--stream fits the group"     "$(grep -c '^GROUP A' "$tmp/s1.txt")" "1"
 check "--stream reports like the default" \
-      "$(head -1 "$tmp/sr1.txt" | awk '{print $1, $NF}')" "group floor"
+      "$(grep '^group ' "$tmp/sr1.txt" | awk '{print $1, $NF}')" "group floor"
 
 "$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s2.txt" 2>/dev/null
 check "--stream repeats byte for byte" "$(cmp -s "$tmp/s1.txt" "$tmp/s2.txt" && echo same)" "same"
@@ -273,7 +303,7 @@ badopt "a zero buffer" "bpnn: --buffer is a number of rows and must be at least 
        -t "$tmp/ok.csv" --stream --buffer 0
 printf 'group,y,x\nA,1,1\nA,2,nan\n' > "$tmp/bad.csv"
 set +e
-out=$("$bin" -t "$tmp/bad.csv" $FAST --stream 2>&1 >/dev/null); rc=$?
+out=$("$bin" -t "$tmp/bad.csv" $FAST --stream --patience 0 2>&1 >/dev/null); rc=$?
 set -e
 check "--stream refuses a nan too" "$(firstline "$out")" \
       "bpnn: the term 'x' is 'nan' on line 3. A nan or an infinity reaches every"

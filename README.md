@@ -76,13 +76,13 @@ Two commands, and the same split as linearr: standard output is the model, stand
 commentary, so the redirect is the whole workflow.
 
     $ ./bpnn -t example/nonlinear.csv > model.txt
-    group        rows   held  weights      train   held-out   refit sd      floor
-    001           400    100       18     1.1706       1.15   0.097926    0.27143
-    002           400    100       18     1.1877     1.2551    0.14005     0.3882
+    group        rows   held  weights  epochs      train   held-out   refit sd      floor
+    001           400     50       18     225     1.0544     1.1134   0.055775     0.1546
+    002           400     50       18     250      1.116      1.133    0.15539    0.43072
 
     $ ./bpnn -c model.txt 001 dose=5 age=60
-    001 los = 16.2301
-    held-out RMSE at fit time 1.14997, spread over refits 0.0979262
+    001 los = 16.778
+    held-out RMSE at fit time 1.11337, spread over refits 0.0557752
 
 `-t` fits every group in one pass; `-c` names the model to score against and is required, because
 which model produced a number is part of the number. **Column 2 is the value being predicted**, and
@@ -111,7 +111,8 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | `-t FILE` | | fit: one network per group, model to stdout, report to stderr |
 | `-c FILE` | *(required to score)* | the fitted model to score a case against |
 | `-H N` | 6 | hidden units |
-| `-e N` | 3000 | epochs |
+| `-e N` | 3000 | epochs, as a ceiling; see `--patience` |
+| `--patience N` | 8 | stop after N checks, 25 epochs apart, with no improvement; 0 runs every epoch |
 | `-s N` | 5 | refits, which is what the spread and the floor are measured over |
 | `-r X` | 0.3 | learning rate |
 | `-m X` | 0.9 | momentum |
@@ -192,13 +193,26 @@ the fitted rows and on the held-out rows are printed side by side. If the second
 model learned this table rather than the relation behind it.
 
     $ ./bpnn -t ~/linearr/example/simple-train.csv > /dev/null
-    group        rows   held  weights      train   held-out   refit sd      floor
-    A               7      2       18 1.4796e-05     5.2607     1.5361     4.2577
+    group        rows   held  weights  epochs      train   held-out   refit sd      floor
+    A               7      2       18    3000 1.4796e-05     5.2607     1.5361     4.2577
       18 weights fitted to 5 training rows. There are more free
       parameters than examples, so some of what it learned is the rows
       themselves. Reduce -H, or use linearr if the relation may be linear.
       held-out error is 355556.7x the training error: this network is fitting
       the rows rather than the relation. Fewer hidden units, or more rows.
+
+**When it stops.** `-e` is a ceiling, not a count. The fit checks its error every 25 epochs on rows
+kept back for that purpose, keeps the weights from the best check, and gives up after `--patience`
+checks with no improvement. The `epochs` column says how many it used. On `example/nonlinear.csv`
+that is 225 and 250 out of 3000, the fit takes 0.20 s instead of 1.51 s, and the held-out error is
+*lower*: 1.11 and 1.13, against 1.15 and 1.26 for the full 3000. The extra epochs were overfitting.
+
+The rows that decide when to stop are not the rows the error is reported on. Choosing a stopping
+point by a number makes that number optimistic by however much was selected for, so the held-out
+rows are split in half: one half stops the fit, the other is reported and is not looked at during it.
+That halves the reported `held` count, which is the cost. Below four rows either way the split means
+nothing and the fit runs its full `-e` epochs, which is what happens on the seven-row groups above.
+`--patience 0` turns the whole thing off.
 
 **Refitting gives a different answer.** Least squares has one solution. A network starts from random
 weights and shuffles its examples, so fitting the same rows twice gives two models and two scores.
@@ -212,8 +226,8 @@ program can check it, because scaling an input needs the range it was trained on
 stored in the model. Outside the range the units saturate and the prediction goes flat:
 
     $ ./bpnn -c model.txt 001 dose=25 age=60
-    001 los = 22.9534
-    held-out RMSE at fit time 1.14997, spread over refits 0.0979262
+    001 los = 22.0926
+    held-out RMSE at fit time 1.11337, spread over refits 0.0557752
     OUTSIDE THE TRAINING RANGE: dose=25, trained on [0.0118, 9.9804], out by 1.51 of that span
     A network does not extrapolate. Past the range above its units saturate and it
     returns a flat value with no warning of its own, so treat this number as a guess.
@@ -251,8 +265,8 @@ a 4-core i7-1165G7; RMSE, lower is better.
 |---|---|---|---|---|
 | exactly linear, no noise | 0 | **0** | no complaint | 4.51 |
 | y = x² + 10, no noise | 0 | 13.49 | wrong shape, term named | **0.96** |
-| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.26 |
-| y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.44 |
+| saturating dose + interaction | 1.0 | 1.86 | wrong shape, term named | 1.13 |
+| y = x₁·x₂ | 1.0 | 8.62 | wrong shape, pair *unnamed* | 1.23 |
 
 Then the comparison a network is usually not put through: the same line, with the one extra column
 its own diagnostic asked for. Still closed form, still exact, still readable coefficients.
@@ -281,7 +295,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make            build ./bpnn and ./bpnn_worker
     make check      ut + cliut: what must pass before a commit
     make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
-    make cliut      91 black-box checks: the built binary, through a shell
+    make cliut      120 black-box checks: the built binary, through a shell
     make ut-asan    both suites under AddressSanitizer
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean

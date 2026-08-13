@@ -76,7 +76,7 @@ typedef struct {
     double tlo, thi;                 /* response range */
     Net   *net;
     double train_rmse, held_rmse, run_sd, best_held;
-    long   nseed, nheld;
+    long   nseed, nheld, epochs_ran;
     int    flat;                     /* the response never varied in this group */
 } Group;
 
@@ -98,6 +98,7 @@ static long    nrow, caprow;
 static long   hidden = 6, epochs = 3000, nseed = 5;
 static double rate = 0.3, momentum = 0.9, holdout = 0.25;
 static int    activation = ACT_TANH;
+static long   patience = 8;         /* --patience: checks without improvement before stopping */
 static int    streaming;            /* --stream: fit without holding the rows */
 static long   bufrows = 65536;      /* --buffer: the shuffle window, in rows */
 
@@ -330,26 +331,39 @@ static int read_csv(const char *path)
     return r == 0 ? 0 : -1;
 }
 
-/* Sort rows by group so each group is one contiguous span (insertion by counting). */
+/* Sort the rows by group, so that a group is one contiguous span.
+ *
+ * In place, by swaps. Copying into a second array is simpler, but it holds both arrays at once
+ * and the row store is the largest thing this program allocates, so that copy doubled the peak.
+ * Here the extra memory is one row plus one long per group. rowgrp is reused to hold each row's
+ * destination: the group number is not needed once the destination is known. */
 static int regroup(void)
 {
-    double *nx = malloc((size_t)nrow * (size_t)nterm * sizeof *nx);
-    double *ny = malloc((size_t)nrow * sizeof *ny);
-    long *at = malloc((size_t)ngroup * sizeof *at), i, run = 0;
-    /* This is the peak: the sort makes a second copy of the store before freeing the first. */
-    if (!nx || !ny || !at) {
-        free(nx); free(ny); free(at);
-        oom_rows("sorting the rows by group, which briefly needs a second copy of them");
+    double *tmp = malloc((size_t)nterm * sizeof *tmp);
+    long   *at = malloc((size_t)ngroup * sizeof *at), i, run = 0;
+
+    if (!tmp || !at) {
+        free(tmp); free(at);
+        oom_rows("sorting the rows by group");
         return -1;
     }
     for (i = 0; i < ngroup; i++) { gp[i].first = run; at[i] = run; run += gp[i].n; }
-    for (i = 0; i < nrow; i++) {
-        long d = at[rowgrp[i]]++;
-        memcpy(nx + (size_t)d * (size_t)nterm, ROW(i), (size_t)nterm * sizeof *nx);
-        ny[d] = ys[i];
-    }
-    free(xs); free(ys); free(at);
-    xs = nx; ys = ny;
+    for (i = 0; i < nrow; i++) rowgrp[i] = at[rowgrp[i]]++;
+    free(at);
+
+    /* rowgrp[i] is where the row now at i belongs. Swapping it there also puts the row that was
+     * in the way into a position whose destination is known, so each swap places one row. */
+    for (i = 0; i < nrow; i++)
+        while (rowgrp[i] != i) {
+            long d = rowgrp[i];
+            double y;
+            memcpy(tmp,    ROW(i), (size_t)nterm * sizeof *tmp);
+            memcpy(ROW(i), ROW(d), (size_t)nterm * sizeof *tmp);
+            memcpy(ROW(d), tmp,    (size_t)nterm * sizeof *tmp);
+            y = ys[i]; ys[i] = ys[d]; ys[d] = y;
+            rowgrp[i] = rowgrp[d]; rowgrp[d] = d;
+        }
+    free(tmp);
     return 0;
 }
 
@@ -428,14 +442,44 @@ static int sigdigits(double v, double span)
 
 /* --------------------------------------------------------------------- fit  */
 
-/* Train one net on the rows of G whose position in `ord` is < ntr. Returns the net, or NULL. */
-static Net *train_one(Group *g, long *ord, long ntr, uint32_t seed)
+/* Copy one net's weights into another of the same shape. */
+static void net_copy_weights(Net *dst, const Net *src)
+{
+    size_t l;
+    for (l = 1; l < src->nlayers; l++) {
+        memcpy(dst->w[l], src->w[l], net_layer_wsize(src, l) * sizeof *src->w[l]);
+        memcpy(dst->b[l], src->b[l], net_layer_bsize(src, l) * sizeof *src->b[l]);
+    }
+}
+
+static double rmse(Group *g, Net *net, const long *ord, long a, long b);
+
+/* Train one net on the rows at positions [0, ntr) of `ord`.
+ *
+ * With --patience 0 it runs the full -e epochs. Otherwise it checks the error on the stop rows,
+ * positions [ntr, nstop), every CHECK epochs, keeps the weights from the best check, and gives up
+ * after `patience` checks with no improvement. Measured on the example files, the held-out error
+ * stops improving one to two orders of magnitude before 3000 epochs, and everything after that is
+ * time spent inside the refit spread.
+ *
+ * The stop rows are not the rows the error is reported on. Choosing when to stop by a number makes
+ * that number optimistic by however much was selected for, which is the same mistake as shipping
+ * the best seed instead of the median, so the held-out rows are split: one half decides when to
+ * stop, the other half is reported and is never looked at during the fit.
+ *
+ * EPOCHS_OUT, when not NULL, receives the number of epochs actually run. */
+#define CHECK 25
+
+static Net *train_one(Group *g, long *ord, long ntr, long nstop, uint32_t seed, long *epochs_out)
 {
     size_t dims[3];
-    Net *net;
+    Net *net, *best = NULL;
     Trainer *t;
     Rng rng;
-    long e, i;
+    long e, i, since = 0;
+    double bestv = 0;
+    int stopping = patience > 0 && nstop > ntr;
+
     dims[0] = (size_t)nterm; dims[1] = (size_t)hidden; dims[2] = 1;
     net = net_new(dims, 3);
     if (!net) return NULL;
@@ -444,6 +488,11 @@ static Net *train_one(Group *g, long *ord, long ntr, uint32_t seed)
     net_init(net, &rng);
     t = trainer_new(net, (smb_real)rate, (smb_real)momentum);
     if (!t) { net_free(net); return NULL; }
+    if (stopping) {
+        best = net_new(dims, 3);
+        if (!best) { trainer_free(t); net_free(net); return NULL; }
+        best->activation = activation;
+    }
     for (e = 0; e < epochs; e++) {
         for (i = ntr - 1; i > 0; i--) {          /* shuffle the training part in place */
             long k = (long)(rng_u32(&rng) % (uint32_t)(i + 1));
@@ -456,8 +505,16 @@ static Net *train_one(Group *g, long *ord, long ntr, uint32_t seed)
             d = scale_out(g, ys[r]);
             (void)trainer_learn(t, xn, &d);
         }
+        if (stopping && (e + 1) % CHECK == 0) {
+            double v = rmse(g, net, ord, ntr, nstop);
+            if (since == 0 && e + 1 == CHECK) { bestv = v; net_copy_weights(best, net); }
+            else if (v < bestv) { bestv = v; net_copy_weights(best, net); since = 0; }
+            else if (++since >= patience) { e++; break; }
+        }
     }
+    if (epochs_out) *epochs_out = e < epochs ? e : epochs;
     trainer_free(t);
+    if (stopping) { net_copy_weights(net, best); net_free(best); }
     return net;
 }
 
@@ -489,16 +546,21 @@ static int fit_group(Group *g)
     long *ord = malloc((size_t)g->n * sizeof *ord);
     double *held = malloc((size_t)nseed * sizeof *held);
     double *srt = malloc((size_t)nseed * sizeof *srt);
+    long *ran = calloc((size_t)nseed, sizeof *ran);
     Net **nets = calloc((size_t)nseed, sizeof *nets);
-    long i, s, ntr, med = 0;
+    long i, s, ntr, nstop, med = 0;
     double m = 0, v = 0, mid;
     int rc = -1;
-    if (!ord || !held || !srt || !nets) goto done;
+    if (!ord || !held || !srt || !nets || !ran) goto done;
     ranges(g);
     ntr = holdout > 0 ? (long)((1.0 - holdout) * (double)g->n + 0.5) : g->n;
     if (ntr < 1) ntr = 1;
     if (ntr > g->n) ntr = g->n;
-    g->nheld = g->n - ntr;
+    /* Half the held-out rows decide when to stop, the other half are reported. Below four rows
+     * either way the split is too small to mean anything, so the fit runs its full epochs. */
+    nstop = ntr + (g->n - ntr) / 2;
+    if (patience <= 0 || nstop - ntr < 4 || g->n - nstop < 4) nstop = ntr;
+    g->nheld = g->n - nstop;
     for (s = 0; s < nseed; s++) {
         Rng r;
         /* a fresh, seed-dependent split AND init per seed, so the reported spread is the
@@ -509,9 +571,9 @@ static int fit_group(Group *g)
             long k = (long)(rng_u32(&r) % (uint32_t)(i + 1));
             long t = ord[i]; ord[i] = ord[k]; ord[k] = t;
         }
-        nets[s] = train_one(g, ord, ntr, (uint32_t)(1u + 104729u * (unsigned)s));
+        nets[s] = train_one(g, ord, ntr, nstop, (uint32_t)(1u + 104729u * (unsigned)s), &ran[s]);
         if (!nets[s]) goto done;
-        held[s] = g->nheld > 0 ? rmse(g, nets[s], ord, ntr, g->n) : rmse(g, nets[s], ord, 0, ntr);
+        held[s] = g->nheld > 0 ? rmse(g, nets[s], ord, nstop, g->n) : rmse(g, nets[s], ord, 0, ntr);
         if (s == 0 || held[s] < g->best_held) g->best_held = held[s];
         if (s == 0) g->train_rmse = rmse(g, nets[s], ord, 0, ntr);
     }
@@ -526,6 +588,7 @@ static int fit_group(Group *g)
     nets[med] = NULL;
     g->held_rmse = held[med];
     g->nseed = nseed;
+    g->epochs_ran = ran[med];
     /* the shipped model's training error, recomputed on its own split */
     {
         Rng r;
@@ -540,7 +603,7 @@ static int fit_group(Group *g)
     rc = 0;
 done:
     for (s = 0; s < nseed; s++) if (nets && nets[s]) net_free(nets[s]);
-    free(ord); free(held); free(srt); free(nets);
+    free(ord); free(held); free(srt); free(nets); free(ran);
     return rc;
 }
 
@@ -1027,17 +1090,17 @@ static int score(const char *path, int argc, char **argv, int from)
 static void report(void)
 {
     long i;
-    fprintf(stderr, "%-10s %6s %6s %8s %10s %10s %10s %10s\n",
-            "group", "rows", "held", "weights", "train", "held-out", "refit sd", "floor");
+    fprintf(stderr, "%-10s %6s %6s %8s %7s %10s %10s %10s %10s\n",
+            "group", "rows", "held", "weights", "epochs", "train", "held-out", "refit sd", "floor");
     for (i = 0; i < ngroup; i++) {
         Group *g = &gp[i];
         long nw, ntr;
         if (!g->net) continue;
         nw = (long)net_nweights(g->net);
         ntr = g->n - g->nheld;
-        fprintf(stderr, "%-10s %6ld %6ld %8ld %10.5g %10.5g %10.5g %10.5g\n",
-                g->name, g->n, g->nheld, nw, g->train_rmse, g->held_rmse, g->run_sd,
-                2.7718 * g->run_sd);
+        fprintf(stderr, "%-10s %6ld %6ld %8ld %7ld %10.5g %10.5g %10.5g %10.5g\n",
+                g->name, g->n, g->nheld, nw, g->epochs_ran ? g->epochs_ran : epochs,
+                g->train_rmse, g->held_rmse, g->run_sd, 2.7718 * g->run_sd);
         /* the network's analogue of a regression's degrees of freedom: least squares pins the
          * terms it cannot identify and says how many, but a network has no such notion and will
          * quietly spend a free parameter per row, so the count has to be put next to the rows */
@@ -1117,7 +1180,7 @@ static int selftest(void)
         }
         nrow = 13; p.first = 0; p.n = 13;
         ranges(&p);
-        n = train_one(&p, ord, 13, 1u);
+        n = train_one(&p, ord, 13, 13, 1u, NULL);   /* no stop rows: the full epochs */
         if (!n) { printf("selftest: cannot train\n"); return 1; }
         e = rmse(&p, n, ord, 0, 13);
         printf("fitting y=x^2+10 on 13 points: RMSE %.4f (span %g) %s\n", e, p.thi - p.tlo,
@@ -1187,6 +1250,9 @@ static void usage(void)
     printf("  -a NAME     hidden activation: sigmoid, tanh, relu (default tanh)\n");
     printf("  --holdout X fraction of rows kept out of the fit (default %g; 0 disables\n", holdout);
     printf("              it and makes the reported error meaningless as generalization)\n");
+    printf("  --patience N  stop a fit after N checks, 25 epochs apart, with no\n");
+    printf("              improvement on the rows kept back for that (default %ld; 0\n", patience);
+    printf("              runs every epoch of -e)\n");
     printf("  --stream    fit without holding the rows in memory: two passes over the\n");
     printf("              file, then one per epoch over a cache. Different training\n");
     printf("              order, so different numbers from the default path.\n");
@@ -1261,6 +1327,9 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--holdout")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             holdout = v;
+        } else if (!strcmp(argv[i], "--patience")) {
+            if (optnum(argc, argv, &i, &v) != 0) return 2;
+            patience = (long)v;
         } else if (!strcmp(argv[i], "--stream")) {
             streaming = 1;
         } else if (!strcmp(argv[i], "--buffer")) {
@@ -1306,6 +1375,13 @@ int main(int argc, char **argv)
         return 2;
     }
     if (streaming) {
+        /* Early stopping needs the stop rows evaluated every check, which on this path means
+         * folding that into the training pass. Not done, so say so rather than let --patience
+         * look as if it applied. */
+        if (patience > 0)
+            fprintf(stderr, "bpnn: --stream runs every one of the %ld epochs; --patience is not\n"
+                            "implemented on this path, so -e is a count here and not a ceiling.\n",
+                    epochs);
         if (fit_stream(path) != 0) { rc = 1; goto out; }
         write_model();
         report();
