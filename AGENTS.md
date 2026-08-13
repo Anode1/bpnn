@@ -74,7 +74,14 @@ at the root.
     c/arena         marker/Mark-Release allocator
     c/data          plain-text datasets, train/test split
     c/ckpt          weight checkpoints
-    c/bpnn.c        the tabular CLI: linearr's CSV in, one network per group, a case scored
+    c/tab.h         the shared table: Group, the row store, the options, and who owns what
+    c/tab.c         the group table, the row store, the scaling, the variance explained
+    c/csvread.c     linearr's CSV in, one row at a time, and every refusal
+    c/fit.c         one group from the row store, over -s refits, with early stopping
+    c/stream.c      the same fit without the row store: cache, shuffle window, --cache
+    c/model.c       the model file, written and read back
+    c/report.c      the fit report and --footprint
+    c/bpnn.c        the CLI: options, scoring, the self-test
     c/main.c        the older single-topology worker; prints a machine-readable RESULT line
     tests/tests.c   -DUNIT_TEST unit suite: rng act net xor arena data conv1d conv2f
     tests/cli.sh    black-box: usage, exit codes, every refusal, and the numeric invariances
@@ -208,10 +215,6 @@ What they raised that is NOT fixed, in the order it should be taken up:
 5. **Min-max scaling on the target is the fragile part.** One extreme response value compresses
    every other row into a sliver of the output band. This is now detected and reported, not
    fixed; robust (quantile) scaling of the target is the fix.
-6. **`c/bpnn.c` is 1,700 lines and holds eight concepts**, against STYLE's one per file. Two
-   independently written fitting paths in one file is what produced three of the five defects.
-   Split at least the reader, the model file, the streaming fit and the report.
-
 Not worth doing, measured: **skip-layer connections**. Implemented and tested by the reviewer;
 they added variance faster than capacity on every example file (refit sd 0.78 against 0.086).
 And **a linear output layer**: retuned for the rate it needs, it matched the sigmoid output

@@ -33,6 +33,8 @@ CPPFLAGS = -Ic -DBPNN_VERSION='"$(BPNN_VERSION)"'
 LDLIBS  = -lm
 
 ENGINE  = c/rng.o c/act.o c/net.o c/train.o c/arena.o c/data.o c/conv2f.o c/ckpt.o
+# The tabular program: one concept per file, sharing the table through tab.h.
+TAB     = c/tab.o c/csvread.o c/fit.o c/stream.o c/model.o c/report.o
 SRC     = $(ENGINE:.o=.c)
 PROG    = bpnn
 WORKER  = bpnn_worker
@@ -46,7 +48,7 @@ check: ut cliut
 
 # bpnn: the tabular predictor. Reads linearr's CSV, fits one network per group, writes a
 # model, scores a case against it. This is the program the README is about.
-$(PROG): c/bpnn.o $(ENGINE)
+$(PROG): c/bpnn.o $(TAB) $(ENGINE)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # bpnn_worker: the older single-topology worker (c/main.c). It trains one named topology
@@ -76,16 +78,16 @@ ut-asan:
 	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=address,undefined -DUNIT_TEST \
 	  -o bpnn_ut_asan tests/tests.c $(SRC) $(LDLIBS) && ./bpnn_ut_asan
 	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=address,undefined \
-	  -o bpnn_asan c/bpnn.c $(SRC) $(LDLIBS) && BPNN=$(PWD)/bpnn_asan sh tests/cli.sh
+	  -o bpnn_asan c/bpnn.c $(TAB:.o=.c) $(SRC) $(LDLIBS) && BPNN=$(PWD)/bpnn_asan sh tests/cli.sh
 ut-ubsan:
 	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=undefined -DUNIT_TEST \
 	  -o bpnn_ut_ubsan tests/tests.c $(SRC) $(LDLIBS) && ./bpnn_ut_ubsan
 	$(CC) $(CPPFLAGS) $(STD) $(WARN) -O1 -g -fsanitize=undefined \
-	  -o bpnn_ubsan c/bpnn.c $(SRC) $(LDLIBS) && BPNN=$(PWD)/bpnn_ubsan sh tests/cli.sh
+	  -o bpnn_ubsan c/bpnn.c $(TAB:.o=.c) $(SRC) $(LDLIBS) && BPNN=$(PWD)/bpnn_ubsan sh tests/cli.sh
 
 pedantic:
 	$(CC) $(CPPFLAGS) $(STD) -pedantic $(WARN) -Wextra -Wshadow -Wconversion -O2 \
-	  -fsyntax-only $(SRC) c/main.c c/bpnn.c
+	  -fsyntax-only $(SRC) $(TAB:.o=.c) c/main.c c/bpnn.c
 
 # ---- the measurement tools -------------------------------------------------
 # One self-contained .c each, no engine dependency. Both self-tests run before the tools are
