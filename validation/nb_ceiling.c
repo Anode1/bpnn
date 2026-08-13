@@ -139,6 +139,17 @@ static int cmp_desc(const void *A, const void *B)
     return x < y ? 1 : (x > y ? -1 : 0);
 }
 
+/* CLUSTER SUBSAMPLING for honest intervals. The cells are not independent observations: they share
+ * architectures, the subsets are nested (top-1000 is inside top-10000), and budgets are repeated
+ * measurements of the same architectures. So the sampling error of a residual must come from resampling
+ * the exchangeable unit, which is the ARCHITECTURE, with the entire pipeline including the top-k selection
+ * recomputed inside each replicate so that selection variability is included.
+ *
+ * m-out-of-n subsampling WITHOUT replacement rather than the ordinary bootstrap, because resampling with
+ * replacement duplicates architectures and so manufactures ties, which a rank statistic like tau is
+ * sensitive to. The spread of a statistic over subsamples of size m scales as sqrt(n/m) relative to the
+ * full sample, so the reported SE multiplies the subsample SD by sqrt(m/n). */
+static int boot_idx[MAXARCH];
 int main(int argc, char **argv)
 {
     const char *path = argc > 1 ? argv[1] : "validation/nb101_triples.txt";
@@ -177,8 +188,8 @@ int main(int argc, char **argv)
     if(!envint("CSV",0)) printf("RANK-CORRELATION CEILING: Kendall tau of a 1-run label against an independent 2-run label.\n");
     if(!envint("CSV",0)) printf("No predictor scored against this benchmark's labels can exceed it.\n");
     if(!envint("CSV",0))
-        printf("  %-12s %10s %12s %10s %8s %10s %9s\n", "subset", "tau", "+-SE", "tied",
-               "sW/sB", "tau_pred", "resid");
+        printf("  %-12s %10s %12s %10s %8s %10s %9s %11s\n", "subset", "tau_retest", "+-SE", "tied",
+               "sW/sB", "pred", "resid", "CEILING");
     for(i = 0; i < 4; i++){
         int m = topk[i] ? (topk[i] < narch ? topk[i] : narch) : narch;
         double tau, se, tied;
@@ -213,20 +224,89 @@ int main(int argc, char **argv)
           /* Var(mean of 2) = sigma_B^2 + sigma_W^2/2, so sigma_B^2 = that minus sigma_W^2/2 */
           vB = m2 - sw/2.0;
           if(vB < 1e-12) vB = 1e-12;
-          icc   = vB / (vB + sw);                       /* ICC(1,1): the ceiling for a 1-run label */
-          rho   = icc;                                  /* 1-run vs 1-run correlation IS the ICC */
-          tpred = (2.0/3.14159265358979323846) * asin(rho);
+          icc   = vB / (vB + sw);                       /* ICC(1,1): reliability of a 1-run label */
+          /* THE CEILING IS sqrt(reliability), NOT the reliability, and the first three versions of this
+           * program had it wrong. The maximum correlation between a DETERMINISTIC model and a noisy label
+           * is sqrt(r_model)*sqrt(r_label) = sqrt(r_label) (Spearman 1904). Reporting the test-retest
+           * agreement itself as the ceiling assumes the model suffers the SAME noise as the label, which
+           * puts the noise factor on both sides and understates the bound by a square root. van Bree,
+           * Styrnal & Hebart (2025) audited 53 neuroscience papers and found 60% making this error, so it
+           * is the standard mistake rather than an exotic one. Note the metric matters: for a reported
+           * CORRELATION the ceiling is sqrt(r); for a reported R^2 it is r. */
+          rho   = icc;                                  /* test-retest: 1-run vs 1-run, which IS the ICC */
+          tpred = (2.0/3.14159265358979323846) * asin(rho);   /* tau a RETEST would achieve */
           ratio = sqrt(sw / vB);
           (void)pooled;
-          if(envint("CSV",0))
-              printf("CELL %s %d %.4f %.4f %.4f %.4f %.4f\n", tag, m, ratio, tau, tpred, tau - tpred, icc);
-          else
-              printf("  %-12s %10.4f %12.4f %9.1f%%  %8.3f %10.4f %+9.4f\n", lab, tau, se, 100.0*tied,
-                     ratio, tpred, tau - tpred); }
+          { double ceil_r = sqrt(icc);                       /* ceiling for a deterministic model */
+            double ceil_t = (2.0/3.14159265358979323846) * asin(ceil_r > 1 ? 1 : ceil_r);
+            if(envint("CSV",0))
+                printf("CELL %s %d %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                       tag, m, ratio, tau, tpred, tau - tpred, icc, ceil_t);
+            else
+                printf("  %-12s %10.4f %12.4f %9.1f%%  %8.3f %10.4f %+9.4f %11.4f\n",
+                       lab, tau, se, 100.0*tied, ratio, tpred, tau - tpred, ceil_t); } }
     }
+    /* BOOT=R: R subsample replicates of the whole pipeline, reporting the sampling SD of the residual
+     * so it can be compared against the systematic residual. If the systematic part greatly exceeds the
+     * sampling part, a confidence interval is the wrong instrument and the honest claim is an
+     * out-of-sample prediction error instead. */
+    { int R = envint("BOOT", 0);
+      if(R > 0){
+          int m = narch/2, rep, j;
+          double sd_t = 0, sd_p = 0, sd_r = 0, s1 = 0, s2 = 0, p1 = 0, p2 = 0, r1 = 0, r2 = 0;
+          int kk = envint("BOOTK", 1000);
+          if(kk > m) kk = m;
+          for(rep = 0; rep < R; rep++){
+              double m1 = 0, m2v = 0, sw = 0, vB, icc, tp, tm;
+              long conc = 0, disc = 0, i2;
+              /* partial Fisher-Yates: draw m distinct architectures */
+              for(j = 0; j < narch; j++) boot_idx[j] = j;
+              for(j = 0; j < m; j++){
+                  int q = j + (int)rbelow((uint32_t)(narch - j)), t = boot_idx[j];
+                  boot_idx[j] = boot_idx[q]; boot_idx[q] = t;
+              }
+              /* rank the subsample by the selection run and keep its own top-kk */
+              for(j = 0; j < m; j++) refkey[boot_idx[j]] = vacc[boot_idx[j]][perm[2]];
+              qsort(boot_idx, (size_t)m, sizeof boot_idx[0], cmp_desc);
+              for(j = 0; j < kk; j++){
+                  int a = boot_idx[j];
+                  double x = vacc[a][perm[0]], y = vacc[a][perm[1]], d = x - y;
+                  m1 += 0.5*(x+y); m2v += 0.25*(x+y)*(x+y); sw += d*d/2.0;
+              }
+              m1 /= kk; m2v = m2v/kk - m1*m1; sw /= kk;
+              vB = m2v - sw/2.0; if(vB < 1e-15) vB = 1e-15;
+              icc = vB/(vB+sw);
+              tp  = (2.0/3.14159265358979323846)*asin(icc > 1 ? 1 : icc);
+              for(i2 = 0; i2 < pairs/8; i2++){
+                  int a = boot_idx[rbelow((uint32_t)kk)], b = boot_idx[rbelow((uint32_t)kk)];
+                  double x, y;
+                  if(a == b) continue;
+                  x = vacc[a][perm[0]] - vacc[b][perm[0]];
+                  y = vacc[a][perm[1]] - vacc[b][perm[1]];
+                  if(x == 0.0 || y == 0.0) continue;
+                  if(x*y > 0) conc++; else disc++;
+              }
+              tm = (conc+disc) ? (double)(conc-disc)/(double)(conc+disc) : 0.0;
+              s1 += tm; s2 += tm*tm; p1 += tp; p2 += tp*tp;
+              r1 += tm-tp; r2 += (tm-tp)*(tm-tp);
+          }
+          sd_t = sqrt(s2/R - (s1/R)*(s1/R));
+          sd_p = sqrt(p2/R - (p1/R)*(p1/R));
+          sd_r = sqrt(r2/R - (r1/R)*(r1/R));
+          printf("\nSUBSAMPLE INTERVALS, %d replicates of %d architectures, own top-%d, selection redone\n",
+                 R, m, kk);
+          printf("  scaling: SD over subsamples times sqrt(m/n) = sqrt(%.3f)\n", (double)m/narch);
+          printf("  measured tau   SD %.5f -> SE %.5f\n", sd_t, sd_t*sqrt((double)m/narch));
+          printf("  predicted tau  SD %.5f -> SE %.5f\n", sd_p, sd_p*sqrt((double)m/narch));
+          printf("  residual       SD %.5f -> SE %.5f   mean residual %+.4f\n",
+                 sd_r, sd_r*sqrt((double)m/narch), r1/R);
+          printf("  If the mean residual is many multiples of that SE, the model is falsified as an exact\n");
+          printf("  statement and the honest claim is an out-of-sample prediction error, not an interval.\n");
+      } }
     if(envint("CSV",0)) return 0;
-    printf("  A published tau must be read against the row for the subset it was computed on. The top-k\n");
-    printf("  rows are the relevant ones for predictors, which are used to rank good architectures.\n");
+    printf("  tau_retest is what a SECOND noisy run achieves against the first, and it is NOT the bound\n");
+    printf("  on a deterministic predictor. CEILING = (2/pi)arcsin(sqrt(ICC)) is that bound, and it is\n");
+    printf("  substantially higher. Read a published correlation against CEILING, on the matching subset.\n");
 
     /* ---- 2. the indifference class of the reported optimum ---- */
     {

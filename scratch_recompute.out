@@ -1,0 +1,9 @@
+cells written: 104
+residual over 104 cells: mean +0.0024  RMS 0.0684  worst |r| 0.4447 at nb101_b108 n=423624
+
+by noise-to-signal ratio:
+  ratio a <0.3     n=13  mean -0.0360  RMS 0.0566
+  ratio b 0.3-0.6  n=18  mean -0.0040  RMS 0.0777
+  ratio c 0.6-1.0  n=20  mean +0.0287  RMS 0.1038
+  ratio d 1.0-2.0  n=41  mean +0.0035  RMS 0.0520
+  ratio e >2.0     n=12  mean +0.0060  RMS 0.0274

@@ -12,9 +12,32 @@ recover them; `validation/PROVENANCE_nas.md` has the URLs and the checks.
 
 ---
 
-## 1. The rank-correlation ceiling
+## 1. The rank-correlation ceiling  [CORRECTED, AND LARGELY PRIOR ART]
 
-**This is the most useful result here and the one with an audience that needs it.**
+**Two corrections, both from an outside review, and they change this section substantially.**
+
+**The estimator was wrong.** We reported the test-retest agreement as the ceiling. The maximum
+correlation between a DETERMINISTIC model and a noisy label is sqrt(r_model)*sqrt(r_label) =
+sqrt(r_label) (Spearman 1904); using the retest agreement itself assumes the model suffers the same noise
+as the label and so puts the noise factor on both sides, understating the bound by a square root. van
+Bree, Styrnal & Hebart (2025) audited 53 neuroscience papers and found 60% making exactly this error, so
+it is the standard mistake. For a reported correlation the ceiling is sqrt(r); for a reported R^2 it is r.
+Corrected, NB101 top-1000 is **0.293, not 0.084**.
+
+**And the concept is a 17-year-old import with published leaderboard rows.** Saliency evaluation has done
+this since at least 2009: MIT300's leaderboard carried a top row reading "Baseline: infinite humans",
+obtained by predicting one group of n observers from another and extrapolating n to infinity, explicitly
+"used to normalize the scores for all computational models" (Bylinskii, Judd, Oliva, Torralba, Durand,
+TPAMI 2019). Brain-Score splits repetitions of the same stimulus, applies a Spearman-Brown correction, and
+divides every model score by the resulting ceiling. So it is false to write that ML ignores reliability
+ceilings, and the honest framing is an import into architecture search rather than a new idea.
+
+**What is genuinely unfilled, in Brain-Score's own words:** "If source data is produced by a stochastic
+process, the same procedure can be carried out on the source data, resulting in the source's reliability
+r_ss ... All models that we tested so far produced deterministic responses, thus r_ss = 1 in our scoring."
+In architecture search the candidate measurement IS a training run, so r_ss < 1. That slot is empty and is
+the cleanest statement of what this work contributes.
+
 
 Zero-cost proxies, surrogate models and performance predictors are all scored by rank correlation
 against a benchmark label. That label is the mean of a few noisy training runs, so there is a ceiling on
@@ -46,7 +69,7 @@ benchmarks are not interpretable without it.
 phenomenon easy to miss: measured over the full space, a single run ranks architectures well, because
 most of the space is separated by margins far larger than the noise.
 
-## 2. The indifference class of the reported optimum
+## 2. The indifference class of the reported optimum  [CORRECTED]
 
 A benchmark's best architecture is the argmax of a noisy mean. Counting the architectures its own data
 cannot separate from that winner at 95%, testing each pair with its own noise (Welch on two three-run
@@ -58,9 +81,23 @@ means):
     NAS-Bench-201 CIFAR-100        73.503             4 of 15,625  (0.03%)        0.290
     NAS-Bench-201 ImageNet16       46.883            15 of 15,625  (0.10%)        0.300
 
-So NAS-Bench-101's reported optimum is one of 3,558 architectures the benchmark cannot distinguish from
-it, and any regret measured against that single point inherits the width. NAS-Bench-201 is much better
-behaved on this axis, which is worth saying plainly rather than lumping the two together.
+**The 3,558 figure was inflated and must not be quoted.** NAS-Bench-101's own paper reports 11
+architectures within two standard errors of its best, and an outside reviewer flagged the gap as reading
+like inflation. It is. Recomputing on test accuracy the way the paper does, as a BAND around the best
+using the best architecture's own standard error, gives **26**, which is the same order as their 11. Our
+much larger number came from a per-pair test that also carries the OTHER architecture's noise, so an
+architecture with a 40-point spread is never separable from anything and lands in the set even when its
+mean is 40 points below the best. Splitting it out:
+
+    all architectures                                  423,624
+    within 2 SEM of the best (band, as the paper does)       26
+    per-pair test, all architectures                     3,781
+    per-pair test, excluding those with SD > 5 pp           275
+
+So 3,506 of the 3,781 were there because THEY are noisy, not because they are good. The defensible
+statements are the band count of 26 and, if a per-pair test is wanted, the 275 among stable
+architectures. This is the third time today that a heavy-tailed noise distribution inflated a headline
+figure of ours, which is itself worth recording as a pattern rather than three separate slips.
 
 ## 3. How often one training run gets a comparison backwards
 
