@@ -282,13 +282,21 @@ badopt "a non-numeric --patience" "bpnn: --patience six is not a number" \
 
 "$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s1.txt" 2>"$tmp/sr1.txt"
 check "--stream exits 0"            "$?" "0"
-check "--stream says --patience does not apply to it" \
-      "$(head -1 "$tmp/sr1.txt")" "bpnn: --stream runs every one of the 50 epochs; --patience is not"
 check "--stream names the response" "$(grep '^response' "$tmp/s1.txt")" "response y"
 check "--stream names the terms"    "$(grep '^terms' "$tmp/s1.txt")" "terms 1 x"
 check "--stream fits the group"     "$(grep -c '^GROUP A' "$tmp/s1.txt")" "1"
 check "--stream reports like the default" \
       "$(grep '^group ' "$tmp/sr1.txt" | awk '{print $1, $NF}')" "group floor"
+
+# -e is a ceiling on this path too, and the stop rows are held out of the reported error the same
+# way. With --patience 0 every epoch runs and every held-out row is reported.
+stream_used() { "$bin" -t "$tmp/stop.csv" --stream "$@" 2>&1 >/dev/null | awk '$1=="A"{print $5}'; }
+used=$(stream_used -e 3000 -s 2)
+check "--stream stops before the ceiling" "$([ "$used" -lt 3000 ] && echo yes)" "yes"
+check "--stream --patience 0 runs every epoch" "$(stream_used -e 50 -s 2 --patience 0)" "50"
+sheld() { "$bin" -t "$tmp/stop.csv" --stream "$@" 2>&1 >/dev/null | awk '$1=="A"{print $3}'; }
+check "--stream reports fewer held rows when it stops early" \
+      "$([ "$(sheld -e 50 -s 2)" -lt "$(sheld -e 50 -s 2 --patience 0)" ] && echo yes)" "yes"
 
 "$bin" -t "$tmp/ok.csv" $FAST --stream > "$tmp/s2.txt" 2>/dev/null
 check "--stream repeats byte for byte" "$(cmp -s "$tmp/s1.txt" "$tmp/s2.txt" && echo same)" "same"
@@ -303,7 +311,7 @@ badopt "a zero buffer" "bpnn: --buffer is a number of rows and must be at least 
        -t "$tmp/ok.csv" --stream --buffer 0
 printf 'group,y,x\nA,1,1\nA,2,nan\n' > "$tmp/bad.csv"
 set +e
-out=$("$bin" -t "$tmp/bad.csv" $FAST --stream --patience 0 2>&1 >/dev/null); rc=$?
+out=$("$bin" -t "$tmp/bad.csv" $FAST --stream 2>&1 >/dev/null); rc=$?
 set -e
 check "--stream refuses a nan too" "$(firstline "$out")" \
       "bpnn: the term 'x' is 'nan' on line 3. A nan or an infinity reaches every"

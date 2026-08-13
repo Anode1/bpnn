@@ -647,10 +647,22 @@ static uint32_t mix32(uint32_t a, uint32_t b, uint32_t c)
     return h;
 }
 
-static int held_row(long g, long ord, long seed)
+/* What a row is for, in one refit: 0 trains on it, 1 uses it to decide when to stop, 2 has it
+ * reported. The stop half and the reported half are drawn by a second, independent hash, for the
+ * same reason the default path splits its held-out rows: a stopping point chosen on a number
+ * makes that number optimistic by however much was selected for. */
+#define ROLE_TRAIN  0
+#define ROLE_STOP   1
+#define ROLE_REPORT 2
+
+static int rowrole(long g, long ord, long seed)
 {
-    if (holdout <= 0) return 0;
-    return (double)mix32((uint32_t)g, (uint32_t)ord, (uint32_t)seed) < holdout * 4294967296.0;
+    uint32_t h;
+    if (holdout <= 0) return ROLE_TRAIN;
+    h = mix32((uint32_t)g, (uint32_t)ord, (uint32_t)seed);
+    if ((double)h >= holdout * 4294967296.0) return ROLE_TRAIN;
+    if (patience <= 0) return ROLE_REPORT;
+    return (mix32((uint32_t)ord, (uint32_t)seed, (uint32_t)g) & 1u) ? ROLE_STOP : ROLE_REPORT;
 }
 
 /* A window of records in random order: push one in, take one out. Memory is the window size,
@@ -770,7 +782,11 @@ static int fit_stream(const char *path)
     Shuf          *sh = NULL;
     unsigned char *rec = NULL, *out = NULL;
     double        *sse_tr = NULL, *sse_he = NULL, *held = NULL, *srt = NULL;
-    long          *n_tr = NULL, *n_he = NULL;
+    double        *sse_st = NULL, *bestv = NULL;
+    long          *n_tr = NULL, *n_he = NULL, *n_st = NULL, *since = NULL, *ran = NULL;
+    long          *n_best = NULL;
+    Net          **bests = NULL;
+    char          *done = NULL;
     long           sorted_runs = 0, sorted_steps = 0;
     long           i, s, e, k;
     size_t         rs;
@@ -790,13 +806,22 @@ static int fit_stream(const char *path)
     sse_he = calloc((size_t)k, sizeof *sse_he);
     n_tr   = calloc((size_t)k, sizeof *n_tr);
     n_he   = calloc((size_t)k, sizeof *n_he);
+    sse_st = calloc((size_t)k, sizeof *sse_st);
+    n_st   = calloc((size_t)k, sizeof *n_st);
+    bestv  = calloc((size_t)k, sizeof *bestv);
+    n_best = calloc((size_t)k, sizeof *n_best);
+    since  = calloc((size_t)k, sizeof *since);
+    ran    = calloc((size_t)k, sizeof *ran);
+    done   = calloc((size_t)k, sizeof *done);
+    bests  = calloc((size_t)k, sizeof *bests);
     held   = calloc((size_t)nseed, sizeof *held);
     srt    = calloc((size_t)nseed, sizeof *srt);
     sh     = calloc((size_t)nseed, sizeof *sh);
     rec    = malloc(rs);
     out    = malloc(rs);
     if (!nets || !trs || !sse_tr || !sse_he || !n_tr || !n_he || !held || !srt || !sh
-        || !rec || !out) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+        || !rec || !out || !sse_st || !n_st || !bestv || !n_best || !since || !ran || !done
+        || !bests) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
 
     for (s = 0; s < nseed; s++) {
         sh[s].buf = malloc((size_t)bufrows * rs);
@@ -816,6 +841,11 @@ static int fit_stream(const char *path)
             nets[i * nseed + s] = n;
             trs[i * nseed + s] = trainer_new(n, (smb_real)rate, (smb_real)momentum);
             if (!trs[i * nseed + s]) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+            if (patience > 0) {
+                bests[i * nseed + s] = net_new(dims, 3);
+                if (!bests[i * nseed + s]) { fprintf(stderr, "bpnn: out of memory\n"); goto done; }
+                bests[i * nseed + s]->activation = activation;
+            }
         }
     }
 
@@ -831,7 +861,7 @@ static int fit_stream(const char *path)
                     int32_t g, ord;
                     memcpy(&g, out, sizeof g);
                     memcpy(&ord, out + sizeof g, sizeof ord);
-                    if (!held_row(g, ord, s))
+                    if (!done[(long)g * nseed + s] && rowrole(g, ord, s) == ROLE_TRAIN)
                         (void)trainer_learn(trs[(long)g * nseed + s],
                                             (const smb_real *)(void *)(out + REC_HEAD),
                                             (const smb_real *)(void *)(out + REC_HEAD +
@@ -843,13 +873,59 @@ static int fit_stream(const char *path)
                 int32_t g, ord;
                 memcpy(&g, out, sizeof g);
                 memcpy(&ord, out + sizeof g, sizeof ord);
-                if (!held_row(g, ord, s))
+                if (!done[(long)g * nseed + s] && rowrole(g, ord, s) == ROLE_TRAIN)
                     (void)trainer_learn(trs[(long)g * nseed + s],
                                         (const smb_real *)(void *)(out + REC_HEAD),
                                         (const smb_real *)(void *)(out + REC_HEAD +
                                             (size_t)nterm * sizeof(float)));
             }
+
+        /* Every CHECK epochs, one extra read of the cache scores the stop rows of every fit that
+         * is still running. It costs one pass in twenty-five, and it is a separate pass because
+         * the weights have to hold still while a fit is being judged. */
+        if (patience > 0 && (e + 1) % CHECK == 0) {
+            long live = 0;
+            for (i = 0; i < k; i++) { sse_st[i] = 0; n_st[i] = 0; }
+            rewind(cache);
+            while (fread(rec, rs, 1, cache) == 1) {
+                int32_t g, ord;
+                float t;
+                double y;
+                memcpy(&g, rec, sizeof g);
+                memcpy(&ord, rec + sizeof g, sizeof ord);
+                memcpy(&t, rec + REC_HEAD + (size_t)nterm * sizeof t, sizeof t);
+                y = unscale_out(&gp[g], (double)t);
+                for (s = 0; s < nseed; s++) {
+                    long at = (long)g * nseed + s;
+                    double p;
+                    if (done[at] || rowrole(g, ord, s) != ROLE_STOP) continue;
+                    p = unscale_out(&gp[g], (double)net_forward(nets[at],
+                            (const smb_real *)(void *)(rec + REC_HEAD))[0]);
+                    sse_st[at] += (p - y) * (p - y);
+                    n_st[at]++;
+                }
+            }
+            for (i = 0; i < k; i++) {
+                double v;
+                if (done[i]) continue;
+                if (n_st[i] < 4) { done[i] = 2; ran[i] = epochs; continue; } /* too few to judge */
+                live++;
+                v = sqrt(sse_st[i] / (double)n_st[i]);
+                if (n_best[i] == 0 || v < bestv[i]) {
+                    bestv[i] = v; n_best[i] = 1; since[i] = 0; ran[i] = e + 1;
+                    net_copy_weights(bests[i], nets[i]);
+                } else if (++since[i] >= patience) {
+                    done[i] = 1;
+                }
+            }
+            if (live == 0) break;
+        }
     }
+
+    /* Every fit that stopped goes back to the weights of its best check. */
+    if (patience > 0)
+        for (i = 0; i < k; i++)
+            if (n_best[i]) net_copy_weights(nets[i], bests[i]);
 
     /* One more pass for the errors, in the response's own units. */
     rewind(cache);
@@ -865,8 +941,11 @@ static int fit_stream(const char *path)
             long at = (long)g * nseed + s;
             double p = unscale_out(&gp[g],
                 (double)net_forward(nets[at], (const smb_real *)(void *)(rec + REC_HEAD))[0]);
-            if (held_row(g, ord, s)) { sse_he[at] += (p - y) * (p - y); n_he[at]++; }
-            else                     { sse_tr[at] += (p - y) * (p - y); n_tr[at]++; }
+            switch (rowrole(g, ord, s)) {
+            case ROLE_REPORT: sse_he[at] += (p - y) * (p - y); n_he[at]++; break;
+            case ROLE_TRAIN:  sse_tr[at] += (p - y) * (p - y); n_tr[at]++; break;
+            default: break;                       /* a stop row is in neither figure */
+            }
         }
     }
 
@@ -899,6 +978,7 @@ static int fit_stream(const char *path)
         g->train_rmse = sqrt(sse_tr[i * nseed + med] / (double)n_tr[i * nseed + med]);
         g->nheld = n_he[i * nseed + med];
         g->nseed = nseed;
+        g->epochs_ran = ran[i * nseed + med] ? ran[i * nseed + med] : epochs;
     }
 
     /* If the file is already ordered by the response, a window smaller than the file leaves
@@ -914,9 +994,11 @@ done:
     if (cache) fclose(cache);
     if (sh) for (s = 0; s < nseed; s++) free(sh[s].buf);
     if (trs) for (i = 0; i < k; i++) if (trs[i]) trainer_free(trs[i]);
+    if (bests) for (i = 0; i < k; i++) if (bests[i]) net_free(bests[i]);
     if (nets) for (i = 0; i < k; i++) if (nets[i]) net_free(nets[i]);
-    free(nets); free(trs); free(sh); free(rec); free(out);
+    free(nets); free(trs); free(bests); free(sh); free(rec); free(out);
     free(sse_tr); free(sse_he); free(n_tr); free(n_he); free(held); free(srt);
+    free(sse_st); free(n_st); free(bestv); free(n_best); free(since); free(ran); free(done);
     return rc;
 }
 
@@ -1375,13 +1457,6 @@ int main(int argc, char **argv)
         return 2;
     }
     if (streaming) {
-        /* Early stopping needs the stop rows evaluated every check, which on this path means
-         * folding that into the training pass. Not done, so say so rather than let --patience
-         * look as if it applied. */
-        if (patience > 0)
-            fprintf(stderr, "bpnn: --stream runs every one of the %ld epochs; --patience is not\n"
-                            "implemented on this path, so -e is a count here and not a ceiling.\n",
-                    epochs);
         if (fit_stream(path) != 0) { rc = 1; goto out; }
         write_model();
         report();
