@@ -1,5 +1,10 @@
 # The Good Day Problem
 
+> **RETRACTED, 2026-08-12.** This document belongs to a closed direction. Several of its headline
+> numbers are wrong (the 0.084 ceiling should be 0.293) or inflated (the 3,558 indifference class
+> should be 26), and its central claims turned out to be prior art. Read `doc/CLOSED.md` first: it
+> lists every claim and what became of it. Kept for the record, not for citation.
+
 *Every AI benchmark number is part skill and part luck. Somebody had to measure which part, so we did,
 and the answer is worse than we expected in the place where it matters most.*
 
