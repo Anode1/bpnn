@@ -17,6 +17,39 @@ the response, bin the age, add a squared column. It was too early and the idea w
 programs now exist, so the comparison can be run. It is in
 [When a network is worth it](#when-a-network-is-worth-it), and the network does not win it.
 
+## Which of the two to use
+
+You have a table: one row per case, some columns describing it, one column to predict. The
+decision is four steps and the first three do not involve this program.
+
+**1. Fit the line.** `linearr -t data.csv`. It is exact, has no seed, and gives coefficients you
+can say out loud: *dialysis adds 4.2 days*. A clinician can agree or disagree with that sentence,
+which matters more than accuracy.
+
+**2. Read what it says about its own residuals.** With `--residuals` it checks whether what is
+left over still depends on a column. **If it says nothing, stop.** The relation is a line and a
+network can only do worse: on the length-of-stay file whose truth is linear, the line reaches the
+noise floor at 1.03 and this program gets 1.43.
+
+**3. If it complains, it usually names the column.** Add that column's square and refit the line.
+On every file in `bench/` that reached the noise floor in closed form, and you still have readable
+coefficients. This step is the one most people skip, and it is usually the right answer.
+
+**4. Only then reach for this program** — when the line is wrong and nobody can say what to add.
+That is the saturating shape, where the fifth procedure does not add what the first did: the line
+scores 2.57 there and this scores 1.15.
+
+`scripts/escalate.sh data.csv` does all four and stops at the right one, on a measurement rather
+than on taste.
+
+**The case where neither works, stated here because it is the most likely one.** When two columns
+*interact* — two procedures together costing more than apart — the line is wrong, linearr's check
+stays **silent**, and this program does not find it either at any capacity. Measured on a
+length-of-stay shape: line 1.75, network 1.67, and the line *told which pair* 1.07. With 24
+indicators at 18% prevalence, only 3% of rows carry both, so the effect lives in a few dozen rows.
+Neither program will name that pair. A clinician who can is worth more than either, and the
+measurement is in [The length-of-stay shape](#the-length-of-stay-shape).
+
 ## How it pairs with linearr
 
 linearr fits straight lines in closed form and then reads its own residuals: with `--residuals` it
