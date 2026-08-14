@@ -1,0 +1,83 @@
+# Every check this project has, on every push, on two platforms.
+#
+# No branch filter, deliberately. A `branches: [main]` copied into a repository whose branch is
+# `master` produces a workflow that never runs once while the README claims it does.
+#
+# macOS is the point of this file. clang is a compiler nothing in this tree has ever seen, its
+# libc is not glibc, and its userland is BSD; the first run is expected to find things.
+name: checks
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # --version reads the git tag
+      - name: build
+        run: make && test -x ./bpnn && ./bpnn --version
+      - name: unit suite
+        run: make ut
+      - name: the tools, and their self-tests
+        run: make tools
+      - name: black-box suite
+        run: make cliut
+      - name: pedantic, every source in the tree
+        run: make pedantic
+      - name: AddressSanitizer
+        run: make ut-asan
+      - name: UndefinedBehaviorSanitizer
+        run: make ut-ubsan
+
+  compilers:
+    # The cheapest job here, and the one that would have caught two defects on day one: three gcc
+    # versions disagreed about c/stream.c while the author's did not.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc-12, gcc-13, clang]
+        opt: ["-O0", "-O2"]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: install ${{ matrix.cc }}
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cc }}
+      - name: build and check at ${{ matrix.opt }}
+        run: make CFLAGS="${{ matrix.opt }}" && make CFLAGS="${{ matrix.opt }}" check
+      - name: pedantic
+        run: make pedantic
+
+  reproducible:
+    # The README claims a model reproduces byte for byte. This is the check that makes that true
+    # rather than asserted: two compilers, two optimisation levels, one model file.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: fit the same file four ways
+        run: |
+          set -e
+          for spec in "cc -O0" "cc -O2 -march=native" "clang -O0" "clang -O2 -march=native"; do
+            set -- $spec; comp=$1; shift
+            make clean >/dev/null
+            make CC="$comp" CFLAGS="$*" >/dev/null
+            # the header comments carry the build's own version, which is not part of the model
+            ./bpnn -t example/nonlinear.csv -e 200 -s 3 2>/dev/null | grep -v '^#' > "m-$comp$1.txt"
+          done
+          for f in m-*.txt; do echo "$f"; done
+          first=$(ls m-*.txt | head -1)
+          for f in m-*.txt; do
+            cmp "$first" "$f" || { echo "MODELS DIFFER: $first vs $f"; exit 1; }
+          done
+          echo "every build produced the same model"

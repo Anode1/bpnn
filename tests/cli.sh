@@ -13,7 +13,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 bin=${BPNN:-$root/bpnn}
 [ -x "$bin" ] || { echo "build first: make" >&2; exit 1; }
 
-tmp=$(mktemp -d)
+tmp=$(mktemp -d 2>/dev/null || mktemp -d -t bpnn)
 trap 'rm -rf "$tmp"' EXIT
 cd "$root"
 
@@ -23,6 +23,11 @@ no()   { fail=$((fail+1)); echo "  FAIL $1"; }
 check(){ if [ "$2" = "$3" ]; then ok; else no "$1: expected [$3], got [$2]"; fi; }
 # the first line of stderr, which is where every refusal starts
 firstline(){ printf '%s' "$1" | head -1; }
+# BSD and GNU disagree about the name of every checksum tool and about sort -g. Both are used
+# only to compare two outputs for equality, so any stable digest will do.
+digest() { if command -v md5sum >/dev/null 2>&1; then md5sum; \
+           elif command -v md5 >/dev/null 2>&1; then md5; \
+           else cksum; fi; }
 
 # Small fits: this suite tests messages and exit codes, not fit quality.
 FAST="-e 50 -s 2"
@@ -491,8 +496,8 @@ set -e
 check "a model with more groups than the build holds is refused" "$rc" "1"
 
 # Below the checkpoint interval, the restore copied a net that had never been written.
-a=$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | md5sum)
-b=$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | md5sum)
+a=$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | digest)
+b=$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | digest)
 check "a fit shorter than one checkpoint is still deterministic" "$a" "$b"
 check "and does not ship all-zero weights" \
       "$("$bin" -t "$tmp/ok.csv" -e 5 -s 3 2>/dev/null | awk '$1=="w" && $2+0!=0' | wc -l | tr -d ' ')" \
@@ -500,8 +505,8 @@ check "and does not ship all-zero weights" \
 
 # --stream stopped training at epoch 25 whenever a fit had too few rows to judge a stop by,
 # and then reported the full epoch count.
-c=$("$bin" -t "$tmp/tiny.csv" --stream -e 25 -s 2 --holdout 0.15 2>/dev/null | md5sum)
-d=$("$bin" -t "$tmp/tiny.csv" --stream -e 400 -s 2 --holdout 0.15 2>/dev/null | md5sum)
+c=$("$bin" -t "$tmp/tiny.csv" --stream -e 25 -s 2 --holdout 0.15 2>/dev/null | digest)
+d=$("$bin" -t "$tmp/tiny.csv" --stream -e 400 -s 2 --holdout 0.15 2>/dev/null | digest)
 check "--stream keeps training when it cannot judge a stop" \
       "$([ "$c" = "$d" ] && echo identical || echo differs)" "differs"
 
@@ -515,7 +520,7 @@ check "an offset of 1e10 does not destroy the variance explained" \
 # the model file and checks it against the smaller of the two refits.
 "$bin" -t "$tmp/ok.csv" -e 200 -s 2 --per-refit "$tmp/two.refits" > "$tmp/two.model" 2>/dev/null
 shipped=$(grep '^diag ' "$tmp/two.model" | tr ' ' '\n' | sed -n 's/^shipped=//p')
-lower=$(grep '^REFIT ' "$tmp/two.refits" | awk '{print $4}' | sort -g | head -1)
+lower=$(grep '^REFIT ' "$tmp/two.refits" | awk '{print $4}' | sort -n | head -1)
 check "two refits ship the better of the two, not the worse" \
       "$(awk -v a="$shipped" -v b="$lower" 'BEGIN{d=a-b; if(d<0)d=-d; print (d < 1e-4*b) ? "same" : a" vs "b}')" \
       "same"

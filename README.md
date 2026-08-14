@@ -457,6 +457,18 @@ Forked from [SMBPANN](https://github.com/Anode1/SMBPANN), which is untouched and
 | [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) | every rate and footprint, the machine they came from, and the script that reproduces each |
 | `bench/compare.sh` | the comparison above, and why each of the four files is in it |
 
+## Platforms
+
+Built and checked on Linux and macOS on every push (`.github/workflows/checks.yml`): the unit
+suite, the black-box suite, `pedantic` over every source, and both sanitizers. A second job builds
+under gcc 12, gcc 13 and clang at two optimisation levels, and a third fits the same file with all
+four and compares the model files byte for byte, which is what makes the reproducibility claim
+above a measurement rather than an assertion.
+
+**Only Linux has been used by hand.** macOS passes its checks in CI and nobody has driven it.
+Windows is not covered at all: `bpnn_worker` uses `getopt`, and `--stream` without `--cache` uses
+`tmpfile()`, which on Windows wants the drive root.
+
 ## See also
 
 - [linearr](https://github.com/Anode1/linearr): the straight line, in closed form, which is the program
