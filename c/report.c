@@ -9,6 +9,22 @@
 
 #include "tab.h"
 
+/* What was read, before anything is fitted. A CSV carries no statement of which column is the
+ * response, so a file written in another order fits the wrong one and exits 0; the commonest
+ * mistake there is has to be visible at the moment it is made, on the stream a person is
+ * watching. linearr prints the same line for the same reason. */
+void reading_line(const char *path)
+{
+    long j;
+    fprintf(stderr, "reading %s: column 1 is the group, '%s' is the value being predicted, and\n"
+                    "the other %ld column%s %s the term%s:",
+            strcmp(path, "-") ? path : "standard input", response,
+            nterm, nterm == 1 ? "" : "s", nterm == 1 ? "is" : "are", nterm == 1 ? "" : "s");
+    for (j = 0; j < nterm && j < 8; j++) fprintf(stderr, " %s", term[j]);
+    if (nterm > 8) fprintf(stderr, " ... (%ld more)", nterm - 8);
+    fprintf(stderr, "\nUse -y NAME if that is the wrong column.\n");
+}
+
 /* --per-refit: one line per group per refit, so two runs can be compared as matched pairs
  * rather than as two summaries. The seed line is the pairing stamp: both arms draw their split
  * and their starting weights from the refit index alone, so refit s of one configuration and
@@ -122,6 +138,7 @@ void report(void)
     }
     /* What this fit cost to hold, once it is large enough to matter. The streaming path does not
      * pay it, and the figure is the one that decides whether a larger file will fit at all. */
+    fprintf(stderr, "what each column means, and how far to trust it: doc/DIAGNOSTICS.md\n");
     if (!streaming && rowcost() * (double)nrow >= 67108864.0)
         fprintf(stderr, "\nthe row store held %ld rows at %.0f bytes each, %.3g GB, and the sort\n"
                         "briefly needed a second copy. --stream fits the same model without\n"

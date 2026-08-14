@@ -86,6 +86,9 @@ static int score_stream(void)
     int nf;
 
     for (i = 0; i < nterm; i++) given[i] = 1;
+    fprintf(stderr, "scoring against %s: %ld group%s, %ld term%s. Errors and warnings below are\n"
+                    "numbered by the input line they came from.\n",
+            response, ngroup, ngroup == 1 ? "" : "s", nterm, nterm == 1 ? "" : "s");
     while (fgets(line, sizeof line, stdin)) {
         long gi = -1;
         lineno++;
@@ -197,8 +200,8 @@ static int score(const char *path, int argc, char **argv, int from)
             goto out;
         }
     }
-    fprintf(stderr, "the case: held-out RMSE at fit time %.6g, spread over refits %.6g\n",
-            g->held_rmse, g->run_sd);
+    fprintf(stderr, "this model's held-out RMSE at fit time %.6g, spread over refits %.6g\n",
+            g->shipped_held > 0 ? g->shipped_held : g->held_rmse, g->run_sd);
     score_one(g, raw, given, "the case");
     rc = 0;
 out:
@@ -270,6 +273,7 @@ static void usage(void)
     printf("  bpnn -c model.txt A x=3          score one case\n");
     printf("  bpnn --selftest                  check the arithmetic\n\n");
     printf("input CSV is linearr's: a header, then GROUP, the response, one column per term.\n\n");
+    printf("  -y NAME     the column to predict, when it is not column 2\n");
     printf("  -H N        hidden units, --size N also (R's nnet calls it size)\n");
     printf("              (default %ld)\n", hidden);
     printf("  -e N        epochs (default %ld)\n", epochs);
@@ -348,6 +352,30 @@ int main(int argc, char **argv)
     long g;
     int rc = 0;
 
+    /* --opt=value, rewritten as --opt value before anything reads it. The joined form is the
+     * convention most fingers have, and rejecting it said the option did not exist. */
+    {
+        static char  buf[64][NAMELEN + 8];
+        static char *av[128];
+        int n = 0, nb = 0;
+        av[n++] = argv[0];
+        for (i = 1; i < argc && n < 126; i++) {
+            char *eq = (argv[i][0] == '-' && argv[i][1] == '-') ? strchr(argv[i], '=') : NULL;
+            size_t len = eq ? (size_t)(eq - argv[i]) : 0;
+            if (eq && len > 0 && len < sizeof buf[0] && nb < 64) {
+                memcpy(buf[nb], argv[i], len);
+                buf[nb][len] = '\0';
+                av[n++] = buf[nb++];
+                av[n++] = eq + 1;
+            } else {
+                av[n++] = argv[i];
+            }
+        }
+        av[n] = NULL;
+        argv = av;
+        argc = n;
+    }
+
     for (i = 1; i < argc; i++) {
         double v;
         const char *s;
@@ -356,7 +384,17 @@ int main(int argc, char **argv)
             return 0;
         }
         else if (!strcmp(argv[i], "--selftest")) return selftest();
-        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(); return 0; }
+        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+            /* -h beside -t redirected help into the model file and exited 0. Help is an action,
+             * not a modifier, and it is the only thing a run does. */
+            if (argc != 2) {
+                fprintf(stderr, "bpnn: --help takes no other arguments. Did you mean -H %s?\n",
+                        i + 1 < argc ? argv[i + 1] : "N");
+                return 2;
+            }
+            usage();
+            return 0;
+        }
         else if (!strcmp(argv[i], "-t")) {
             if (optstr(argc, argv, &i, &path) != 0) return 2;
             mode = 1;
@@ -393,6 +431,8 @@ int main(int argc, char **argv)
             decay = v;
         } else if (!strcmp(argv[i], "--stream")) {
             streaming = 1;
+        } else if (!strcmp(argv[i], "-y")) {
+            if (optstr(argc, argv, &i, &ycol) != 0) return 2;
         } else if (!strcmp(argv[i], "--per-refit")) {
             if (optstr(argc, argv, &i, &refitpath) != 0) return 2;
         } else if (!strcmp(argv[i], "--cache")) {
@@ -472,6 +512,8 @@ int main(int argc, char **argv)
         goto out;
     }
     if (read_csv(path) != 0) { rc = 1; goto out; }
+    if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
+    reading_line(path);
     refit_open();
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
     if (regroup() != 0) { rc = 1; goto out; }

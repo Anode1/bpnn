@@ -76,12 +76,15 @@ Two commands, and the same split as linearr: standard output is the model, stand
 commentary, so the redirect is the whole workflow.
 
     $ ./bpnn -t example/nonlinear.csv > model.txt
+    reading example/nonlinear.csv: column 1 is the group, 'los' is the value being predicted, and
+    the other 2 columns are the terms: dose age
+    Use -y NAME if that is the wrong column
     group        rows   held  weights  epochs      train   held-out   refit sd      floor   expl
     001           400     50       25      80     1.0728      1.135   0.046012    0.12754    92%
     002           400     50       25       9     1.1515     1.2135    0.16096    0.44616    92%
 
     $ ./bpnn -c model.txt 001 dose=5 age=60
-    the case: held-out RMSE at fit time 1.13502, spread over refits 0.0460124
+    this model's held-out RMSE at fit time 1.12561, spread over refits 0.0460124
     001,16.9632
 
 Standard output is the prediction and nothing else, so scoring is a pipeline stage. With no case on
@@ -104,9 +107,10 @@ have -- goes to standard error, named by the line it came from:
     -:1: a network does not extrapolate; past its range the units saturate
 
 `-t` fits every group in one pass; `-c` names the model to score against and is required, because
-which model produced a number is part of the number. **Column 2 is the value being predicted**, and
+which model produced a number is part of the number. **Column 2 is the value being predicted** and
 columns 3 onward are the terms, exactly as in linearr. Nothing in the data can say which column you
-meant.
+meant, so the first line of the report says which one was taken and `-y NAME` overrides it. A file
+saved in another order is the commonest mistake there is, and it fits cleanly and exits 0.
 
 The numbers on the right are the report. `train` is the error on the rows the fit saw, `held-out` the
 error on the rows it did not, and `expl` is the share of those rows' variance the fit accounts for:
@@ -138,6 +142,7 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | --- | --- | --- |
 | `-t FILE` | | fit: one network per group, model to stdout, report to stderr |
 | `-c FILE` | *(required to score)* | the fitted model to score against; with no case on the command line, cases are read from stdin |
+| `-y NAME` | column 2 | the column to predict |
 | `-H N`, `--size N` | 6 | hidden units (`size` is R `nnet`'s name for it) |
 | `-e N` | 3000 | epochs, as a ceiling; see `--patience` |
 | `--patience N` | 50 | stop after N epochs with no improvement on the rows kept back to judge it; 0 disables |

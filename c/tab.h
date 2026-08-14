@@ -64,7 +64,8 @@ extern long   hidden, epochs, nseed, patience, minrows, bufrows;
 extern double rate, momentum, holdout, decay;
 extern int    activation, streaming;
 extern const char *cachepath;
-extern const char *refitpath;   /* --per-refit: where the per-refit errors are written */
+extern const char *refitpath;
+extern const char *ycol;        /* -y: the column to predict, when it is not column 2 */   /* --per-refit: where the per-refit errors are written */
 extern const char *inpath;      /* what a message names; set when a file is opened */
 
 long   group_of(const char *name);
@@ -105,6 +106,7 @@ void net_copy_weights(Net *dst, const Net *src);
 int  fit_stream(const char *path);  /* stream.c */
 void write_model(void);         /* model.c  */
 int  read_model(const char *path);
+void reading_line(const char *path);
 void refit_open(void);          /* report.c */
 void refit_group(const Group *g, const double *held, const double *train, const long *ran);
 void refit_close(void);

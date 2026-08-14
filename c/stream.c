@@ -273,6 +273,9 @@ int fit_stream(const char *path)
     size_t         rs;
     int            reused = 0, rc = -1;
 
+    /* Named here, not in the reader: with a warm cache the CSV is never opened, and the model's
+     * provenance line would otherwise say the rows came from standard input. */
+    inpath = path;
     /* With --cache, the two setup passes are skipped whenever the named file already describes
      * this input. Without it, the cache is a temporary file and the passes always run. */
     if (cachepath && stamp_of(path, &stamp) != 0) {
@@ -373,6 +376,7 @@ int fit_stream(const char *path)
     first = ftell(cache);
     if (first < 0) { fprintf(stderr, "bpnn: cannot seek the row cache\n"); goto done; }
     if (!reused && pack_cache(path, cache) != 0) goto done;
+    reading_line(path);
     refit_open();          /* after the scan, so the stamp can carry the shape of the data */
     /* The header is checked against the input; the records are not checked against anything, and
      * a record's group indexes the network, trainer and group arrays. A truncated or edited

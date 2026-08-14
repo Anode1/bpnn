@@ -45,7 +45,7 @@ out=$("$bin" --help); rc=$?
 set -e
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "14"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "15"
 
 set +e
 out=$("$bin" --selftest); rc=$?
@@ -180,7 +180,7 @@ set +e
 "$bin" -t "$tmp/ok.csv" $FAST > "$tmp/m1.txt" 2>"$tmp/r1.txt"; rc=$?
 set -e
 check "the fit exits 0"          "$rc" "0"
-check "the report has a header"  "$(head -1 "$tmp/r1.txt" | awk '{print $1, $NF}')" "group expl"
+check "the report has a header"  "$(grep '^group ' "$tmp/r1.txt" | awk '{print $1, $NF}')" "group expl"
 check "one report row per group" "$(grep -c '^A ' "$tmp/r1.txt")" "1"
 check "the model names the response" "$(grep '^response' "$tmp/m1.txt")" "response y"
 check "the model names the terms"    "$(grep '^terms' "$tmp/m1.txt")" "terms 1 x"
@@ -195,7 +195,8 @@ check "the same input gives the same model" "$(cmp -s "$tmp/m1.txt" "$tmp/m2.txt
 { cat "$tmp/ok.csv"; printf 'B,1,1\nB,2,2\n'; } > "$tmp/two.csv"
 out=$("$bin" -t "$tmp/two.csv" $FAST 2>&1 >/dev/null)
 check "a group too small to fit is named" \
-      "$(firstline "$out")" "bpnn: group B has 2 rows. Under 24 the fitted, stopping and"
+      "$(printf '%s' "$out" | grep -m1 '^bpnn: group B')" \
+      "bpnn: group B has 2 rows. Under 24 the fitted, stopping and"
 check "and the other group is still fitted" \
       "$("$bin" -t "$tmp/two.csv" $FAST 2>/dev/null | grep -c '^GROUP A')" "1"
 
@@ -217,7 +218,7 @@ check "a case is scored to stdout as CSV" "$("$bin" -c "$M" A x=3 2>/dev/null)" 
 check "and nothing but the answer is on stdout" \
       "$("$bin" -c "$M" A x=3 2>/dev/null | wc -l | tr -d ' ')" "1"
 check "the fit-time error goes to stderr" \
-      "$("$bin" -c "$M" A x=3 2>&1 >/dev/null | head -1 | cut -d' ' -f1-5)" "the case: held-out RMSE at"
+      "$("$bin" -c "$M" A x=3 2>&1 >/dev/null | grep -c "held-out RMSE at fit time")" "1"
 
 # Cases from a pipe: the form a deployed predictor actually uses.
 check "a pipe of cases gives one line each" \
@@ -227,17 +228,17 @@ check "and each line names its group" \
 check "a header line is skipped, so a training file scores" \
       "$(printf 'group,x\nA,3\n' | "$bin" -c "$M" 2>/dev/null | wc -l | tr -d ' ')" "1"
 check "a case with the wrong field count is refused" \
-      "$(printf 'A,3,4\n' | "$bin" -c "$M" 2>&1 >/dev/null | head -1)" \
+      "$(printf 'A,3,4\n' | "$bin" -c "$M" 2>&1 >/dev/null | grep -m1 '^-:')" \
       "-:1: 3 fields; this model wants the group and 1 term"
 set +e
 printf 'A,3,4\n' | "$bin" -c "$M" >/dev/null 2>&1; rc=$?
 set -e
 check "and exits 1" "$rc" "1"
 check "a non-numeric case in the stream is refused with its line and column" \
-      "$(printf 'A,oops\n' | "$bin" -c "$M" 2>&1 >/dev/null | head -1)" \
+      "$(printf 'A,oops\n' | "$bin" -c "$M" 2>&1 >/dev/null | grep -m1 '^-:')" \
       "-:1:2: the term 'x' is 'oops', which is not a number."
 check "an unknown group in the stream is refused" \
-      "$(printf 'Q,3\n' | "$bin" -c "$M" 2>&1 >/dev/null | head -1)" \
+      "$(printf 'Q,3\n' | "$bin" -c "$M" 2>&1 >/dev/null | grep -m1 '^-:')" \
       "-:1:1: group 'Q' is not in this model"
 
 badscore() {  # label, expected first line, then arguments after -c MODEL
@@ -284,7 +285,7 @@ used=$(epochs_used -e 3000 -s 2)
 check "the fit stops before the ceiling" "$([ "$used" -lt 3000 ] && echo yes)" "yes"
 check "--patience 0 runs every epoch"    "$(epochs_used -e 200 -s 2 --patience 0)" "200"
 check "the epochs column is in the report" \
-      "$("$bin" -t "$tmp/stop.csv" $FAST 2>&1 >/dev/null | head -1 | awk '{print $5}')" "epochs"
+      "$("$bin" -t "$tmp/stop.csv" $FAST 2>&1 >/dev/null | grep '^group ' | awk '{print $5}')" "epochs"
 
 # Half the held-out rows decide when to stop, so the reported count is the other half. With the
 # check off, every held-out row is reported.
@@ -394,7 +395,7 @@ check "and a fit that works says nothing about it" \
       "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 2>&1 >/dev/null \
          | grep -c 'barely using its' || true)" "0"
 check "the variance explained is a column" \
-      "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 2>&1 >/dev/null | head -1 | awk '{print $NF}')" "expl"
+      "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 2>&1 >/dev/null | grep '^group ' | awk '{print $NF}')" "expl"
 check "and is in the model's diag line" \
       "$("$bin" -t "$tmp/stop.csv" -e 200 -s 2 2>/dev/null | grep -c 'expl=')" "1"
 badopt "a negative --decay" \
@@ -413,8 +414,11 @@ check "the first run builds the cache" "$([ -s "$tmp/c1.bin" ] && echo yes)" "ye
 "$bin" -t "$tmp/cache.csv" $FAST --stream --cache "$tmp/c1.bin" > "$tmp/c2.txt" 2>/dev/null
 check "the second run reuses it and agrees" \
       "$(cmp -s "$tmp/c1.txt" "$tmp/c2.txt" && echo same)" "same"
+# The provenance comment names the input, and these two runs read different files, so compare
+# everything the model is rather than the header comments.
 check "and both agree with no cache at all" \
-      "$(cmp -s "$tmp/c1.txt" "$tmp/s1.txt" && echo same)" "same"
+      "$(grep -v '^#' "$tmp/c1.txt" > "$tmp/c1b"; grep -v '^#' "$tmp/s1.txt" > "$tmp/s1b"; \
+         cmp -s "$tmp/c1b" "$tmp/s1b" && echo same)" "same"
 check "a reused cache is silent about it" \
       "$("$bin" -t "$tmp/cache.csv" $FAST --stream --cache "$tmp/c1.bin" 2>&1 >/dev/null \
          | grep -c 'rebuilding it' || true)" "0"
@@ -550,6 +554,27 @@ if [ -x "$root/pairstat" ]; then
           "$(firstline "$out")" "pairstat: these two runs are not paired and cannot be compared as if"
     check "and the refusal exits nonzero" "$rc" "2"
 fi
+
+# ------------------------------------------------- what the fit says it read
+# A CSV cannot say which column is the response, so a file in another order fits the wrong one
+# and exits 0. The commonest mistake there is has to be visible where a person is looking.
+
+check "the fit echoes the response and the terms" \
+      "$("$bin" -t "$tmp/ok.csv" $FAST 2>&1 >/dev/null | grep -c "'y' is the value being predicted")" "1"
+awk -F, 'BEGIN{OFS=","} NR==1{print $1,$3,$2; next} {print $1,$3,$2}' "$tmp/ok.csv" > "$tmp/rev.csv"
+check "and names the wrong one when the columns are swapped" \
+      "$("$bin" -t "$tmp/rev.csv" $FAST 2>&1 >/dev/null | grep -c "'x' is the value being predicted")" "1"
+check "-y puts it right" \
+      "$("$bin" -t "$tmp/rev.csv" -y y $FAST 2>&1 >/dev/null | grep -c "'y' is the value being predicted")" "1"
+check "-y naming no column is refused" \
+      "$("$bin" -t "$tmp/ok.csv" -y nope $FAST 2>&1 >/dev/null | grep -c 'names no column in this file')" "1"
+
+# -h beside an action wrote the help text into the model file and exited 0.
+badopt "--help beside a fit" "bpnn: --help takes no other arguments. Did you mean -H 12?" \
+       -t "$tmp/ok.csv" -h 12
+# --opt=value used to be reported as an option that does not exist.
+check "--opt=value is accepted" \
+      "$("$bin" -t "$tmp/ok.csv" --holdout=0.3 $FAST 2>&1 >/dev/null | grep -c '^group ')" "1"
 
 # ------------------------------------------------------------------------ end
 

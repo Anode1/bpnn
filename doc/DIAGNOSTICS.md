@@ -101,6 +101,7 @@ tree, a paired 95% MDE of 0.026 where the printed floor was 0.248.
 the refit index alone, so refit 3 of one configuration and refit 3 of another saw the same rows
 and the same initial weights. Comparing them pairwise cancels the noise they share:
 
+    $ make tools                      # pairstat is not built by a plain make
     $ ./bpnn -t data.csv -H 4 --per-refit h4.refits > /dev/null
     $ ./bpnn -t data.csv -H 8 --per-refit h8.refits > /dev/null
     $ ./pairstat --paired h4.refits h8.refits
@@ -157,6 +158,20 @@ It was computed against the variance of *all* the group's rows until an outside 
 reporting 100% for a fit that did worse than the mean of the rows it was scored on. The
 denominator comes from one refit's reported rows, so it moves by a few points depending on which;
 a pooled sum over all refits would be steadier and is not implemented.
+
+## What is in the model file that is not in the report
+
+`diag` carries three errors, and only one of them belongs in a report about the shipped model:
+
+| field | what it is |
+|---|---|
+| `held` | the mean over refits: the column the report prints, which nothing selected on |
+| `shipped` | this model's own held-out error. It is what scoring quotes, and it *is* a selected statistic |
+| `best` | the best refit's held-out error. Present so the gap to `shipped` is visible. **Do not quote it** -- it is the most optimistic of `-s` draws and estimates nothing |
+
+The header comments record which build wrote the file, from which input, and how many rows,
+groups and terms it saw. There is deliberately no timestamp: two fits of one file stay
+byte-identical, which is what makes a refactor checkable.
 
 ## The advisories
 

@@ -9,6 +9,9 @@
 
 #include "tab.h"
 
+/* Which term position -y swapped the response out of, or -1. */
+static long yswap = -1;
+
 int split_csv(char *line, char **f, int maxf)
 {
     int n = 0, i;
@@ -134,6 +137,25 @@ int reader_row(Reader *rd, long *grp, double *y, double *x)
                     }
                 strncpy(term[i], fld[i + 2], NAMELEN - 1);
             }
+            /* -y names the response; swap it into column 2's place so everything downstream
+             * sees the layout it expects. */
+            if (ycol) {
+                long j, hit = -1;
+                if (!strcmp(response, ycol)) hit = -2;
+                for (j = 0; j < nterm; j++) if (!strcmp(term[j], ycol)) hit = j;
+                if (hit == -1) {
+                    fprintf(stderr, "%s:%ld: -y %s names no column in this file\n",
+                            inpath, rd->lineno, ycol);
+                    return -1;
+                }
+                if (hit >= 0) {
+                    char tmp[NAMELEN];
+                    memcpy(tmp, response, NAMELEN);
+                    memcpy(response, term[hit], NAMELEN);
+                    memcpy(term[hit], tmp, NAMELEN);
+                    yswap = hit;
+                }
+            }
             rd->header = 1;
             continue;
         }
@@ -150,10 +172,12 @@ int reader_row(Reader *rd, long *grp, double *y, double *x)
             return -1;
         }
         snprintf(what, sizeof what, "'%s', the value being predicted,", response);
-        if (number(fld[1], what, rd->lineno, 2, y) != 0) return -1;
+        if (number(fld[yswap < 0 ? 1 : yswap + 2], what, rd->lineno,
+                   yswap < 0 ? 2 : yswap + 3, y) != 0) return -1;
         for (i = 0; i < nterm; i++) {
+            long col = (i == yswap) ? 1 : i + 2;
             snprintf(what, sizeof what, "the term '%s'", term[i]);
-            if (number(fld[i + 2], what, rd->lineno, (long)(i + 3), &x[i]) != 0) return -1;
+            if (number(fld[col], what, rd->lineno, col + 1, &x[i]) != 0) return -1;
         }
         return 1;
     }

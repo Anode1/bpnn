@@ -10,14 +10,26 @@
 #include "tab.h"
 #include "act.h"
 
+#ifndef BPNN_VERSION
+#define BPNN_VERSION "0.0.0-dev"
+#endif
+
 void write_model(void)
 {
     long i, j;
     size_t l, k;
+    /* Provenance, as comments so the reader skips them and an oracle diff can too. Which model
+     * produced a number is part of the number, and the file said nothing about where it came
+     * from. Deliberately no timestamp: two fits of one file stay byte-identical. */
     printf("# bpnn model: one network per group, fitted by ./bpnn -t\n");
+    printf("# bpnn %s, from %s: %ld rows, %ld group%s, %ld term%s\n",
+           BPNN_VERSION, strcmp(inpath, "-") ? inpath : "standard input", nrow, ngroup,
+           ngroup == 1 ? "" : "s", nterm, nterm == 1 ? "" : "s");
     printf("# Read the diag line before using it. train and held are RMSE in %s;\n", response);
     printf("# sd is the spread over refits and floor=2.77*sd is the smallest difference\n");
-    printf("# between two configurations this pipeline can resolve at all.\n");
+    printf("# between two configurations this pipeline can resolve at all. shipped is the error\n");
+    printf("# of the model in this file and best is the best refit's; doc/DIAGNOSTICS.md says\n");
+    printf("# which of them to quote.\n");
     printf("BPNN 1\n");
     printf("response %s\n", response);
     printf("terms %ld", nterm);

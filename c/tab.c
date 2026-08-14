@@ -25,6 +25,7 @@ double rate = 0.3, momentum = 0.9, holdout = 0.25, decay;
 int    activation = ACT_TANH, streaming;
 const char *cachepath;
 const char *refitpath;
+const char *ycol;
 const char *inpath = "-";
 
 long group_of(const char *name)
