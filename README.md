@@ -445,19 +445,36 @@ sanitizer targets build the binary as well as the suite, since the CSV reader is
 the binary. `./bpnn --selftest` is a smaller check the binary carries itself: input scaling at both
 ends, the target round-trip, the resolution coefficient, and a parabola fitted to a known error.
 
-## Scope and limits
+## What this is, and what it is not
 
-Use it when a line has been tried and its residual check says the shape is wrong; when the machine has
-no Python and is not going to get one; when the answer has to be reproducible byte for byte from a
-seed; or when the job is many small independent fits, one per group, where a general-purpose library
-spends more time dispatching operations than computing them.
+This was not written to compete with a framework. It was written with
+[linearr](https://github.com/Anode1/linearr) in mind, for the case that program runs out of: the
+dependency is not linear, and you still want an answer you can defend. Everything about it follows
+from that — one topology, one optimiser, per-group fitting, a CSV in and a case out, and a report
+whose job is to tell you when not to believe it.
 
-Reach for something else when you need any of: regularization beyond early stopping, dropout, batch
-normalisation, an optimiser other than momentum, more than one output, class probabilities, embeddings,
-convolution over anything but the built-in 1-D and 2-D front ends, a GPU, or automatic differentiation.
-None of that is here and none of it is planned. PyTorch, scikit-learn's `MLPRegressor`, and gradient
-boosting for tabular data in particular do all of it well, and on tables of this shape boosting usually
-beats a small network.
+**The standard tools are better at almost everything.** Keras and TensorFlow train any architecture
+you can draw, on GPUs, with autodiff; TFLite and LiteRT deploy those models to phones and
+microcontrollers with quantisation and hardware delegates; and for tabular data specifically,
+gradient boosting — LightGBM, XGBoost, CatBoost — usually beats a small network outright. If your
+question is "what is the most accurate model", none of the answers is this program. Reach for
+something else when you need class probabilities, more than one output, embeddings for
+high-cardinality codes, dropout, batch normalisation, an optimiser other than momentum, a GPU, or
+anything that is not a table. None of it is here and none of it is planned.
+
+**The band this is for is narrow, and it is real.** A tabular relation that a line gets wrong,
+where nobody can say which column to add; the machine has no Python and is not going to get one; the
+answer must reproduce byte for byte years later, from an archived model, on another compiler; the
+data per group is small enough that a framework's defaults will overfit it silently; and somebody
+will have to defend the number rather than a leaderboard position.
+
+**It is also an instrument, not only a predictor.** Most of the code is not the network — it is the
+part that measures whether the fit is worth anything: the spread over refits and the resolution that
+implies, the variance explained on rows the fit never saw, whether a case is outside the range each
+term was fitted over, whether the output has saturated, whether one extreme response has wrecked the
+scaling. `validation/pairstat.c` and `validation/resolve.c` answer the same question for any pair of
+numbers, not only this program's. A framework will fit whatever you hand it and report a loss
+without comment; this one is built to say what it cannot tell you.
 
 Two hard limits. The engine computes in `smb_real`, which is `float`, so about seven digits. linearr
 validates against NIST reference values to eleven; nothing here should be trusted past six. And the
