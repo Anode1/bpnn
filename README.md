@@ -45,7 +45,7 @@ than on taste.
 **The case where neither works, stated here because it is the most likely one.** When two columns
 *interact* — two procedures together costing more than apart — the line is wrong, linearr's check
 stays **silent**, and this program does not find it either at any capacity. Measured on a
-length-of-stay shape: line 1.75, network 1.67, and the line *told which pair* 1.07. With 24
+length-of-stay shape: line 1.75, network 1.65, and the line *told which pair* 1.07. With 24
 indicators at 18% prevalence, only 3% of rows carry both, so the effect lives in a few dozen rows.
 Neither program will name that pair. A clinician who can is worth more than either, and the
 measurement is in [The length-of-stay shape](#the-length-of-stay-shape).
@@ -191,6 +191,7 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | `--per-refit FILE` | | write each refit's held-out error, for `pairstat --paired` |
 | `--missing P` | refuse | `drop` skips rows with an empty field or `NA`, counts them, and records the count in the model |
 | `--id` | | a case carries an opaque id after the group, echoed on the prediction |
+| `--unknown-group P` | fail | `skip` emits `NA` for a group the model does not have, so the output row count still matches the input |
 | `--footprint T G` | | what a fit of T terms and G groups costs in memory |
 | `--selftest` | | check the arithmetic and exit |
 
@@ -397,9 +398,9 @@ procedure indicators, 8 groups, 600 rows each, per-group intercepts. Three files
 different truth underneath, noise floor 1.0 by construction:
 
     truth            floor    linearr     its verdict         bpnn
-    linear             1.0      1.034          SILENT        1.431
-    saturating         1.0      2.574    pair unnamed        1.147
-    interaction        1.0      1.751          SILENT        1.665
+    linear             1.0      1.034          SILENT        1.594
+    saturating         1.0      2.574    pair unnamed        1.169
+    interaction        1.0      1.751          SILENT        1.654
 
     interaction, with the pair added as a column: 1.073
 
@@ -431,7 +432,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make            build ./bpnn and ./bpnn_worker
     make check      ut + cliut: what must pass before a commit
     make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
-    make cliut      195 black-box checks: the built binary, through a shell
+    make cliut      199 black-box checks: the built binary, through a shell
     make ut-asan    both suites under AddressSanitizer
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean

@@ -68,7 +68,9 @@ extern const char *refitpath;
 extern const char *ycol;
 extern int    missing_drop;     /* --missing drop: skip a row with a gap instead of refusing */
 extern long   ndropped;         /* how many were skipped, which the model file records */
-extern int    idcol;            /* --id: a case carries an opaque id after the group */        /* -y: the column to predict, when it is not column 2 */   /* --per-refit: where the per-refit errors are written */
+extern int    idcol;
+extern long   nskipped;
+extern int    unknown_skip;     /* --unknown-group skip: emit NA and carry on */         /* groups too small to fit, which the model records */            /* --id: a case carries an opaque id after the group */        /* -y: the column to predict, when it is not column 2 */   /* --per-refit: where the per-refit errors are written */
 extern const char *inpath;      /* what a message names; set when a file is opened */
 
 long   group_of(const char *name);

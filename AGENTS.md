@@ -38,7 +38,7 @@ Do not change behaviour without changing these first.
     make            # build ./bpnn and ./bpnn_worker
     make check      # ut + cliut -- the commit gate
     make ut         # unit suite, 32 checks
-    make cliut      # black-box, 195 checks: the built binary through a shell
+    make cliut      # black-box, 199 checks: the built binary through a shell
     make ut-asan    # both suites under AddressSanitizer
     make ut-ubsan   # both suites under UBSan
     make pedantic   # -pedantic plus -Wextra -Wshadow -Wconversion; must be clean

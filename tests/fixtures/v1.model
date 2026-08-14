@@ -1,0 +1,76 @@
+# bpnn model: one network per group, fitted by ./bpnn -t
+# bpnn FROZEN, from example/nonlinear.csv: 800 rows, 2 groups, 2 terms
+# Read the diag line before using it. train and held are RMSE in los;
+# sd is the spread over refits and floor=2.77*sd is the smallest difference
+# between two configurations this pipeline can resolve at all. shipped is the error
+# of the model in this file and best is the best refit's; doc/DIAGNOSTICS.md says
+# which of them to quote.
+BPNN 1
+response los
+terms 2 dose age
+hyper hidden=6 epochs=200 rate=0.3 momentum=0.7 act=1 holdout=0.25 seeds=3 decay=0
+GROUP 001 rows=400 held=50
+diag train=1.03091 held=1.12609 shipped=1.12428 sd=0.0273802 floor=0.0758923 best=1.09967 expl=0.9273
+target 3.3788999999999998 23.582599999999999
+range 0.1125 9.9803999999999995
+range 20.379999999999999 89.689999999999998
+net 3 1 2 6 1
+w -0.303847224
+w -1.39669812
+w -0.160983041
+w 0.16626817
+w 0.766190171
+w -1.22280598
+w 0.144215032
+w 0.639457643
+w 3.60502291
+w 0.114871465
+w 1.80900705
+w -0.572170556
+b 1.67073476
+b -0.00161680777
+b -0.0227002092
+b 0.661934733
+b 0.194325134
+b -0.155201361
+w -0.864397109
+w 0.0154663762
+w -0.325706273
+w -0.43406719
+w 2.08891463
+w 0.659331143
+b -0.988180697
+END
+GROUP 002 rows=400 held=50
+diag train=1.04805 held=1.2693 shipped=1.26108 sd=0.0935246 floor=0.259231 best=1.18016 expl=0.8982
+target 6.2374000000000001 24.784500000000001
+range 0.0132 9.9530999999999992
+range 20.109999999999999 89.650000000000006
+net 3 1 2 6 1
+w -3.49375343
+w -0.0430166535
+w 0.303765744
+w -0.931475818
+w 0.322235495
+w -0.615489483
+w -0.709864736
+w -1.46251738
+w -0.026415525
+w 0.581987619
+w 0.95813024
+w -0.214052647
+b -0.00235678302
+b -1.02442169
+b -0.738154769
+b 1.78354084
+b -0.36831674
+b 0.188830838
+w -2.04077148
+w 0.301439792
+w -0.0256405454
+w -1.00578523
+w 0.194476038
+w 0.391770989
+b -0.573122203
+END
+checksum 7e686350

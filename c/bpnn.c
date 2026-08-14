@@ -87,7 +87,7 @@ static int score_stream(void)
     const char *caseid = NULL;
     double raw[MAXTERM];
     int given[MAXTERM];
-    long lineno = 0, n = 0, i;
+    long lineno = 0, n = 0, i, nunknown = 0;
     int nf;
 
     for (i = 0; i < nterm; i++) given[i] = 1;
@@ -121,6 +121,18 @@ static int score_stream(void)
         }
         for (i = 0; i < ngroup; i++) if (!strcmp(gp[i].name, fld[0])) gi = i;
         if (gi < 0 || !gp[gi].net) {
+            /* A ward that did not exist at fit time stopped the nightly run and left a file
+             * that looked complete to anything not checking the exit status. With skip, the
+             * output keeps one line per input row so a positional join still holds. */
+            if (unknown_skip) {
+                if (idcol) printf("%s,%s,NA\n", fld[0], fld[1]);
+                else       printf("%s,NA\n", fld[0]);
+                fprintf(stderr, "-:%ld:1: group '%s' is not in this model; NA\n",
+                        lineno, fld[0]);
+                nunknown++;
+                n++;
+                continue;
+            }
             fprintf(stderr, "-:%ld:1: group '%s' is not in this model\n", lineno, fld[0]);
             return 1;
         }
@@ -136,6 +148,9 @@ static int score_stream(void)
         n++;
     }
     if (ferror(stdin)) { fprintf(stderr, "bpnn: error reading the cases\n"); return 1; }
+    if (nunknown)
+        fprintf(stderr, "bpnn: %ld of %ld cases named a group this model does not have\n",
+                nunknown, n);
     return 0;
 }
 
@@ -294,6 +309,8 @@ static void usage(void)
     printf("  -y NAME     the column to predict, when it is not column 2\n");
     printf("  --missing P refuse (default) or drop rows with an empty field or NA. What\n");
     printf("              was dropped is counted and recorded in the model\n");
+    printf("  --unknown-group P   fail (default) or skip a case whose group is not in\n");
+    printf("              the model; skip emits NA so the row count still matches\n");
     printf("  --id        a case carries an opaque id after the group, echoed on the\n");
     printf("              prediction so it can be joined back to its subject\n");
     printf("  -H N        hidden units, --size N also (R's nnet calls it size)\n");
@@ -467,6 +484,14 @@ int main(int argc, char **argv)
                 fprintf(stderr, "bpnn: --missing takes refuse or drop, not %s\n", s);
                 return 2;
             }
+        } else if (!strcmp(argv[i], "--unknown-group")) {
+            if (optstr(argc, argv, &i, &s) != 0) return 2;
+            if (!strcmp(s, "skip")) unknown_skip = 1;
+            else if (!strcmp(s, "fail")) unknown_skip = 0;
+            else {
+                fprintf(stderr, "bpnn: --unknown-group takes skip or fail, not %s\n", s);
+                return 2;
+            }
         } else if (!strcmp(argv[i], "--id")) {
             idcol = 1;
         } else if (!strcmp(argv[i], "-y")) {
@@ -584,6 +609,7 @@ int main(int argc, char **argv)
                                 "needs about %ld rows for the samples to mean anything, so the group\n"
                                 "is skipped. Pool it, fit it with linearr, or say --min-rows %ld.\n",
                         gp[g].name, gp[g].n, (long)nterm * hidden + hidden * 2 + 1, need, gp[g].n);
+                nskipped++;
                 continue;
             }
         }

@@ -32,7 +32,9 @@ lin_warn() {
     else echo "SILENT"; fi
 }
 # worst held-out over the groups, which is the figure a deployment lives with
-bp() { ./bpnn -t "$1" -H 8 -e 400 -s 3 2>&1 >/dev/null \
+# At the defaults, because a table fitted at flags the reader will not type is a table about
+# something else. The saturating row was 6% better under -H 8 -e 400 -s 3 than ./bpnn -t gives.
+bp() { ./bpnn -t "$1" 2>&1 >/dev/null \
        | awk '$1 ~ /^00/ {if ($7+0>m) m=$7+0} END{printf "%.3f", m}'; }
 
 printf '%-14s %7s %10s %15s %12s\n' "truth" "floor" "linearr" "its verdict" "bpnn"

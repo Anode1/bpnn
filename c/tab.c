@@ -29,6 +29,8 @@ const char *ycol;
 int    missing_drop;
 long   ndropped;
 int    idcol;
+long   nskipped;
+int    unknown_skip;
 
 /* FNV-1a over the model's own lines, so an edited weight is caught rather than scored. Not a
  * cryptographic hash and not offered as one: it detects damage and casual editing, not an

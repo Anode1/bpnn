@@ -50,7 +50,7 @@ out=$("$bin" --help); rc=$?
 set -e
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "17"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "18"
 
 set +e
 out=$("$bin" --selftest); rc=$?
@@ -680,6 +680,16 @@ badopt "--id after -c, where the case begins" \
 
 # An edited weight used to be scored: one digit moved a prediction by six days.
 "$bin" -t "$tmp/ok.csv" -e 200 -s 2 > "$tmp/ck.model" 2>/dev/null
+# An unknown group used to end the batch, leaving a file that looked complete.
+check "--unknown-group skip keeps the row count" \
+      "$(printf 'A,3\nZZ,4\nA,5\n' | "$bin" --unknown-group skip -c "$M" 2>/dev/null | wc -l | tr -d ' ')" "3"
+check "and marks the one it could not score" \
+      "$(printf 'ZZ,4\n' | "$bin" --unknown-group skip -c "$M" 2>/dev/null)" "ZZ,NA"
+set +e
+printf 'A,3\nZZ,4\n' | "$bin" -c "$M" >/dev/null 2>&1; rc=$?
+set -e
+check "and failing is still the default" "$rc" "1"
+
 check "the model carries a checksum" "$(grep -c '^checksum ' "$tmp/ck.model")" "1"
 sed '0,/^w /{s/^w .*/w 9.9/}' "$tmp/ck.model" > "$tmp/ed.model"
 set +e
@@ -688,6 +698,20 @@ set -e
 check "an edited weight is refused" \
       "$(printf '%s' "$out" | grep -c 'checksum does not match')" "1"
 check "and refusing it fails" "$rc" "1"
+
+# ------------------------------------------------ the archived model still scores
+# A model fitted today must score against next year's build, and nothing tested that: every
+# other check here fits fresh and scores what it just fitted, so no format or arithmetic change
+# could be caught. tests/fixtures/v1.model is frozen. If this check fails, either the model
+# format moved or the arithmetic did, and both are the kind of thing to notice deliberately.
+
+if [ -f "$root/tests/fixtures/v1.model" ]; then
+    for case_ in "001 dose=5 age=60" "001 dose=1 age=80" "002 dose=8 age=30"; do
+        "$bin" -c "$root/tests/fixtures/v1.model" $case_ 2>/dev/null
+    done > "$tmp/archived.out"
+    check "a model archived at v1 still scores, to the last digit" \
+          "$(cmp -s "$tmp/archived.out" "$root/tests/fixtures/v1.expected" && echo same)" "same"
+fi
 
 # ------------------------------------------------------------------------ end
 

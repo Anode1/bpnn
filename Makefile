@@ -39,7 +39,7 @@ LDLIBS   ?=
 # on a recent chip, or anywhere on arm64, and the weights move in the ninth digit.
 STD  = -std=c99 -ffp-contract=off
 WARN = -W -Wall -Wshadow -Wconversion
-PROJ = $(STD) $(WARN) -Ic -DBPNN_VERSION='"$(BPNN_VERSION)"'
+PROJ = $(STD) $(WARN) -Ic -DBPNN_VERSION='"$(BPNN_VERSION)"' -DSMB_VERSION='"$(BPNN_VERSION)"'
 LIBM = -lm
 
 # Every header is a prerequisite of every target that compiles sources in one shot: those have no

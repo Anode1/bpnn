@@ -59,6 +59,9 @@ void write_model(void)
      * produced a number is part of the number, and the file said nothing about where it came
      * from. Deliberately no timestamp: two fits of one file stay byte-identical. */
     printf("# bpnn model: one network per group, fitted by ./bpnn -t\n");
+    if (nskipped)
+        printf("# %ld group%s had too few rows to fit and %s not in this model\n",
+               nskipped, nskipped == 1 ? "" : "s", nskipped == 1 ? "is" : "are");
     if (ndropped)
         printf("# %ld rows were dropped for missing values (--missing drop)\n", ndropped);
     printf("# bpnn %s, from %s: %ld rows, %ld group%s, %ld term%s\n",
