@@ -1,8 +1,7 @@
 # Benchmarks
 
 Every figure here was measured on one machine, named below, and reproduced by a script in this
-repository. A rate without a machine is not a measurement, and a number nobody can regenerate is
-not a benchmark.
+repository.
 
     machine   11th Gen Intel Core i7-1165G7 @ 2.80GHz, 4 cores / 8 threads, 12 MB L3
     memory    62 GB
@@ -35,10 +34,27 @@ At the size where it matters, a 235 MB file of ten million rows, four groups, tw
 The streaming figure is the networks plus the shuffle windows and nothing else. The file is 50
 times larger than the memory used to fit it.
 
-**`--stream` is not free.** It pays for one shuffle window per refit whatever the file size, so
+`--stream` is not free. It pays for one shuffle window per refit whatever the file size, so
 below the crossover it costs *more* than holding the rows. A row costs `(terms + 1) * 8 + 8`
 bytes held, so the crossover is around 200,000 rows at two terms and 170,000 at twenty-four.
 `./bpnn --footprint TERMS GROUPS` prints both figures for a shape before you commit to one.
+
+## What `--cache` saves
+
+`--stream` makes two setup passes over the CSV before the first epoch: one for the ranges, one to
+write the scaled rows. `--cache FILE` keeps that second file between runs, so a later run with the
+same input makes neither pass. Measured by hand on a million rows, four groups, two terms, `-e 1`,
+where setup is nearly the whole run:
+
+| | wall |
+|---|---|
+| `--stream -e 1` | 2.8 s |
+| `--stream -e 1 --cache c.bin`, cache cold | 2.8 s |
+| `--stream -e 1 --cache c.bin`, cache warm | 1.9 s |
+
+Best of three, generated with the `gen()` function in `scripts/scale.sh` at `n = 1000000`. The cache
+holds 20 bytes a row at two terms, `(terms + 1) * 4 + 8`, so 20 MB for this file. The saving is the
+parse, and it does not grow with `-e`: at more epochs the fitting dominates and the ratio closes.
 
 ## Fitting rate
 
@@ -76,9 +92,9 @@ Scoring is a different shape of program: one model read, then a forward pass per
 | 200,000 cases from a pipe | 0.12 s, 2.4 MB peak |
 | one case, whole process | 0.4 ms, model read included |
 
-**1.7 million cases a second** through the pipe, against 2,500 a second one process at a time. The
-difference is the argument for the pipe. Neither figure comes from `bench/throughput.sh`, whose
-timer has 10 ms resolution and no pipe case; both were taken by hand and should be.
+**1.7 million cases a second** through the pipe, against 2,500 a second one process at a time.
+Neither figure comes from `bench/throughput.sh`, whose timer has 10 ms resolution and no pipe case;
+both were taken by hand and should be.
 
 ## The comparison against linearr
 

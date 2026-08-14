@@ -21,8 +21,10 @@ beyond memory, and an answer reproducible digit for digit.
   `.c`/`.h`, stack-first, allocation only at construction, bounded strings, return codes, single-exit
   `goto` cleanup, sanitizer-gated. Non-negotiable.
 - **`README.md`** -- what the program promises: the two directions (fit and score), the CSV layout it
-  shares with linearr, the options, and the three failure modes it reports. Behaviour that contradicts
+  shares with linearr, the options, and the four failure modes it reports. Behaviour that contradicts
   it is a defect in one of them.
+- **`doc/dev/PROSE.md`** -- how the documents are written, and the budget for the constructions that
+  had turned every file in the tree into the same essay.
 - **`c/bpnn.c`'s header comment** -- the specification of the tabular CLI: the input format, what each
   reported number means, and why the shipped model is the median of the seeds and not the best.
 - **`c/net.h`, `c/train.h`, `c/arena.h`, `c/data.h`** -- the engine's public API.
@@ -36,7 +38,7 @@ Do not change behaviour without changing these first.
     make            # build ./bpnn and ./bpnn_worker
     make check      # ut + cliut -- the commit gate
     make ut         # unit suite, 32 checks
-    make cliut      # black-box, 178 checks: the built binary through a shell
+    make cliut      # black-box, 184 checks: the built binary through a shell
     make ut-asan    # both suites under AddressSanitizer
     make ut-ubsan   # both suites under UBSan
     make pedantic   # -pedantic plus -Wextra -Wshadow -Wconversion; must be clean
@@ -95,7 +97,7 @@ is bounded rather than asserted. It is gated by `--selftest` against hand-comput
 Paired binary outcomes want an exact McNemar test, computed as a two-sided binomial on the discordant
 pairs.
 
-## What we learned the hard way, and will not repeat
+## What we learned the hard way
 
 These are not general advice. Each one cost real work in the predecessor.
 
@@ -122,14 +124,14 @@ These are not general advice. Each one cost real work in the predecessor.
 9. **Get an adversarial review from someone with no stake in the result**, and give one of them only
    the code and outputs without your conclusions. Two such reviews reversed conclusions here twice.
 
-## The tree stays clean
+## What is not committed
 
 Nothing derived is committed: no binaries, no per-seed run outputs, no benchmark archives, no table a
 Makefile rule or a documented command rebuilds. `.gitignore` names each class and
 `validation/PROVENANCE_nas.md` holds the commands. For experiments that need to cache millions of
 intermediate results, use **AIS** rather than inventing storage here.
 
-## Where the compute actually goes
+## Where the compute goes
 
 Measured on a 4-core i7-1165G7, which is 8 hyperthreads and does **not** give 8 cores' throughput on
 compute-bound work; sizing a run as if it did overran one estimate by 40%.
@@ -140,19 +142,19 @@ compute-bound work; sizing a run as if it did overran one estimate by 40%.
 - Build the scaled trainer when an experiment demands shapes we do not have, and not before. A
   general N-dimensional tensor library with autodiff is a framework, and frameworks are for humans.
 
-## Memory: why linearr streams and what streaming means here
+## Memory and streaming
 
 linearr holds no rows because least squares has a fixed-size sufficient statistic: fold a row into the
 centered co-moments, forget it, solve once at the end. Backpropagation has no such statistic. The
 gradient depends on the current weights, so the data has to be visited once per epoch and no summary
 of it can stand in.
 
-**But "visited" is not "resident".** What backpropagation needs is a re-readable stream, not memory.
-The bound that is actually available here is *memory O(model), time O(epochs x rows)*, and that is the
-one to build to. It differs from linearr's promise and must be stated differently: linearr is one pass
-and O(1) in rows; this is E passes and O(1) in rows.
+But "visited" is not "resident". What backpropagation needs is a re-readable stream, not memory.
+The bound available here is *memory O(model), time O(epochs x rows)*, and that is the one to build
+to. It differs from linearr's promise and must be stated differently: linearr is one pass and O(1)
+in rows; this is E passes and O(1) in rows.
 
-Five things break if that is done naively, and each is a decision to write down rather than discover:
+Five things break if that is done naively, and each is a decision to write down before it is met:
 
 1. **Scaling ranges need a first pass.** The network stores every term's range in order to scale it,
    and that pass is exactly linearr's accumulator: min, max, mean, variance per term per group, O(p)
@@ -175,16 +177,16 @@ Five things break if that is done naively, and each is a decision to write down 
    and let each epoch be a sequential read of it.
 
 Per-group memory is bounded by the topology and the number of groups, never by rows, and the way to
-state that honestly is linearr's: a `--footprint` that prints the figure for a given shape rather than
-a sentence asking to be trusted. When G x model does not fit, fit the groups in K batches and pay K
-passes; that trade is fine as long as it is printed.
+state that is linearr's: a `--footprint` that prints the figure for a given shape. When G x model
+does not fit, fit the groups in K batches and pay K passes; that trade is fine as long as it is
+printed.
 
-## What an outside review found, and what is still open
+## The outside review
 
 Three reviewers were given the tree in August 2026 with no access to the author's reasoning: an
 ML scientist, a statistician and a C programmer. Between them they demonstrated five failures the
-160-check suite passed, all of the class this program exists to refuse. They are fixed and each
-has a regression check; the commit log has the detail.
+black-box suite passed as it then stood, all of the class this program exists to refuse. They are
+fixed and each has a regression check; the commit log has the detail.
 
 What they raised that is NOT fixed, in the order it should be taken up:
 
@@ -224,16 +226,15 @@ order, because each step is the ground the next one stands on:
    every weight with exit 0. Each is now refused naming the line and the column, along with a field
    count that disagrees with the header, a duplicated term name, a group code too long to store, an
    unknown option, an option missing its value, and a case that leaves a term unnamed.
-2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, 165 checks, one per refusal plus the numeric
+2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, 178 checks, one per refusal plus the numeric
    invariances (a term in millions and a response offset by 1e8 must fit identically, and the
    printed prediction must still resolve the response, which at `%g`'s six digits it did not).
-3. ~~**Streaming.**~~ Done as `--stream`, with `--footprint` and `scripts/scale.sh`. Measured over a
-   tenfold increase in rows: 7.2 MB to 8.7 MB streaming, against 53 MB to 514 MB holding them. The
-   rise is the shuffle window filling and stopping at `--buffer`. Points 1 to 4 of the section above
-   are implemented, and so is point 5. -e is a ceiling on both paths, a fit stops when the rows
-   kept back for that purpose stop improving, and --cache keeps the scaled rows between runs,
-   keyed on the input's size and mtime, so the two setup passes happen once: on a million rows
-   that is 2.5 s down to 1.8 s at -e 1.
+3. ~~**Streaming.**~~ Done as `--stream`, with `--footprint` and `scripts/scale.sh`. Memory holds flat
+   over a tenfold increase in rows while the default path grows with them; every figure is in
+   `doc/BENCHMARKS.md` and none is restated here. Points 1 to 5 of the section above are
+   implemented. `-e` is a ceiling on both paths, a fit stops when the rows kept back for that
+   purpose stop improving, and `--cache` keeps the scaled rows between runs, keyed on the input's
+   size and mtime, so the two setup passes happen once.
 4. **Real data.** The 24-term length-of-stay shape from linearr's example data is the target; FSDD
    (`data/fsdd/PROVENANCE.md`) is the non-tabular check the engine already has paths for.
 5. **A classifier**, which needs more than one output and a softmax with cross-entropy. Not before the

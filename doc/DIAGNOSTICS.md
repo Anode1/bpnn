@@ -1,8 +1,8 @@
-# What each reported number is, and where it is wrong
+# The reported numbers
 
-The report is the reason to use this program rather than a fifteen-line network. Every column in
-it is an estimate, and three of them are estimates of things that are hard to estimate. This file
-says what each one computes, and what it does not support.
+The report is the reason to use this program over a fifteen-line network. Every column in it is an
+estimate, and three of them — `held-out`, `refit sd` and `floor` — are estimates of things that are
+hard to estimate. This file says what each one computes, and what it does not support.
 
 An outside statistician was asked to attack these numbers. Most of what follows is what they
 found; the parts that were fixed are described as fixed, and the parts that were not are
@@ -35,28 +35,27 @@ and only the first describes the model that shipped. The stopping check runs eve
 
 RMSE in the response's own units, over the fitted rows and over the reported rows.
 
-**What `held-out` is:** the mean over `-s` refits. It estimates the expected error of *refitting
-this configuration* on data of this kind, averaged over that many splits of this table. Nothing
-selected on it, which is why it replaced the shipped refit's error.
+`held-out` is the mean over `-s` refits. It estimates the expected error of *refitting this
+configuration* on data of this kind, averaged over that many splits of this table. Nothing selected
+on it, which is why it replaced the shipped refit's error.
 
-**What it is not:** the shipped model's own error. The shipped model is the lower-median refit,
-so its estimand is the median of `-s` draws, not their mean. Measured by resampling from `-s 60`
-runs, the gap runs from −0.5% to +4.7% depending on the skew of the refit distribution, usually
-with the mean the higher of the two, so the column is conservative for the shipped model rather
-than unbiased for it. The shipped model's own figure is `shipped=` in the model file, and it *is*
-a selected statistic.
+It is not the shipped model's own error. The shipped model is the lower-median refit, so its
+estimand is the median of `-s` draws, not their mean. Measured by resampling from `-s 60` runs, the
+gap runs from −0.5% to +4.7% depending on the skew of the refit distribution, usually with the mean
+the higher of the two, so the column is conservative for the shipped model rather than unbiased for
+it. The shipped model's own figure is `shipped=` in the model file, and it *is* a selected statistic.
 
-**It is conditional on this table.** Five splits of one 400-row group share about 87.5% of their
+It is conditional on this table. Five splits of one 400-row group share about 87.5% of their
 training rows, so the spread across refits says nothing about a fresh 400 rows. Six independent
 draws from one generating process gave Hodges-Lehmann differences of 0.33 to 0.68 between the same
 two configurations, a scatter as large as any one run's confidence interval.
 
-**And it is not a fair estimate of the configuration you chose.** If you compare several `-H`
-values and keep the winner, the winner's held-out error is optimistic by the usual winner's-curse
-amount. Report the paired *difference* instead, which is unbiased, or refit the chosen shape
-against rows that took no part in the comparison.
+It is also not a fair estimate of the configuration you chose. If you compare several `-H` values
+and keep the winner, the winner's held-out error is optimistic by the usual winner's-curse amount.
+Report the paired *difference*, which is unbiased, or refit the chosen shape against rows that took
+no part in the comparison.
 
-**Scaling.** Each refit's input ranges and target mapping come from its own training rows, so the
+Scaling: each refit's input ranges and target mapping come from its own training rows, so the
 reported rows take no part in the scaling and the range stored in the model is the range the
 shipped refit trained over. `--stream` is the exception: its cache is scaled once and shared
 across refits, so on that path the scaling still sees every row and its reported error is very
@@ -66,15 +65,14 @@ slightly optimistic for that reason.
 
 The sample standard deviation of `held-out` across `-s` refits.
 
-**What it contains:** the randomness of the starting weights, of the shuffling order, and of the
-split, since each refit draws a fresh one.
+It contains the randomness of the starting weights, of the shuffling order, and of the split, since
+each refit draws a fresh one.
 
-**What that means:** it is *not* purely the optimiser's instability, though the README's framing
-of "refitting gives a different answer" invites that reading. A part of it is the sampling noise
-of scoring on a different 50 rows each time, and that part cancels in any comparison run on a
-common test set.
+It is therefore *not* purely the optimiser's instability, though the README's framing of "refitting
+gives a different answer" invites that reading. A part of it is the sampling noise of scoring on a
+different 50 rows each time, and that part cancels in any comparison run on a common test set.
 
-**How well it is known:** from `-s 5` it has 4 degrees of freedom, and a sample SD on 4 df has a
+How well it is known: from `-s 5` it has 4 degrees of freedom, and a sample SD on 4 df has a
 95% interval of roughly [0.60·s, 2.87·s]. At `-s 2` that interval is [0.45·s, 31.9·s]. The number
 is printed to five significant figures and is worth about one.
 
@@ -82,7 +80,7 @@ is printed to five significant figures and is worth about one.
 
 `2.7718 × refit sd`, where 2.7718 is `1.96 × √2`.
 
-**Read it as a rough scale, not as a test.** Four things are wrong with taking it literally:
+Read it as a rough scale. Four things are wrong with taking it literally:
 
 1. It is a critical value, not a minimum detectable effect. A true difference exactly equal to
    the floor is found about half the time. An 80%-power figure is about 43% larger.
@@ -97,7 +95,7 @@ init seed depend only on the refit index, so two configurations get the same spl
 starting weights. A paired comparison is available and is far more sensitive: measured on this
 tree, a paired 95% MDE of 0.026 where the printed floor was 0.248.
 
-**Do the paired comparison instead.** Both runs draw their split and their starting weights from
+Do the paired comparison instead. Both runs draw their split and their starting weights from
 the refit index alone, so refit 3 of one configuration and refit 3 of another saw the same rows
 and the same initial weights. Comparing them pairwise cancels the noise they share:
 
@@ -107,10 +105,10 @@ and the same initial weights. Comparing them pairwise cancels the noise they sha
     $ ./pairstat --paired h4.refits h8.refits
 
 `pairstat` gives a Wilcoxon signed-rank test, a Hodges-Lehmann estimate with a distribution-free
-interval, a paired *t*, Holm correction across the groups, and a minimum detectable effect. On `example/nonlinear.csv` at five refits the paired MDE measures 0.124 and 0.139 for the two
-groups, against printed floors of 0.112 and 0.443 -- sharper on one group and not on the other, so
-this is not the uniform win an earlier draft of this file claimed. At twelve refits it measures
-0.054 and 0.047.
+interval, a paired *t*, Holm correction across the groups, and a minimum detectable effect. On
+`example/nonlinear.csv` at five refits the paired MDE measures 0.124 and 0.139 for the two groups,
+against printed floors of 0.112 and 0.443: sharper on one group and not on the other, so this is not
+the uniform win an earlier draft of this file claimed. At twelve refits it measures 0.054 and 0.047.
 
 `pairstat` prints two versions of the interval, because the naive one is wrong in a way worth
 seeing. The refits are five random splits of one table sharing 86% of their training rows, so
@@ -123,7 +121,7 @@ naive figure at five refits and 1.73 times it at twelve.
     1    held-out      0.12424      0.03342      0.16822      0.04525
     2    held-out      0.13878      0.03733      0.18790      0.05055
 
-**The corrected interval does not shrink to zero with more refits.** It approaches
+The corrected interval does not shrink to zero with more refits. It approaches
 `s·√(n_test/n_train)`, which is `0.41·s` at the default split. More refits measure the resampling
 noise better; they do not measure the difference better. That is the number to know before
 reaching for `-s 50`.
@@ -149,7 +147,7 @@ would need, and it refuses to answer when given one run per candidate.
 Zero means the group's own mean would have done as well; it goes negative when the fit is worse
 than that mean, and the report says so below 5%.
 
-**Where it misleads:** if the response has one extreme value, the variance it is measured against
+Where it misleads: if the response has one extreme value, the variance it is measured against
 is dominated by that value and the ratio reads high while the model is useless. That condition is
 detected separately and reported as `REACHES n INTERQUARTILE RANGES`, because the ratio cannot be
 trusted when it holds.
@@ -159,7 +157,7 @@ reporting 100% for a fit that did worse than the mean of the rows it was scored 
 denominator comes from one refit's reported rows, so it moves by a few points depending on which;
 a pooled sum over all refits would be steadier and is not implemented.
 
-## What is in the model file that is not in the report
+## The model file
 
 `diag` carries three errors, and only one of them belongs in a report about the shipped model:
 

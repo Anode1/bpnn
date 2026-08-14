@@ -170,7 +170,7 @@ check "an over-long group name" "$(firstline "$out")" \
 
 # Comments and blank lines are ordinary, not errors.
 { printf '# a note\n\ngroup,y,x\n# another\n'
-  i=1; while [ $i -le 30 ]; do echo "A,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/cmt.csv"
+  i=1; while [ $i -le 40 ]; do echo "A,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/cmt.csv"
 set +e
 "$bin" -t "$tmp/cmt.csv" $FAST >/dev/null 2>&1; rc=$?
 set -e
@@ -201,12 +201,12 @@ check "the same input gives the same model" "$(cmp -s "$tmp/m1.txt" "$tmp/m2.txt
 out=$("$bin" -t "$tmp/two.csv" $FAST 2>&1 >/dev/null)
 check "a group too small to fit is named" \
       "$(printf '%s' "$out" | grep -m1 '^bpnn: group B')" \
-      "bpnn: group B has 2 rows. Under 24 the fitted, stopping and"
+      "bpnn: group B has 2 rows. This shape fits 19 parameters and"
 check "and the other group is still fitted" \
       "$("$bin" -t "$tmp/two.csv" $FAST 2>/dev/null | grep -c '^GROUP A')" "1"
 
 # A response that never varies makes every error near zero, which looks like a perfect fit.
-{ echo 'group,y,x'; i=1; while [ $i -le 30 ]; do echo "A,7,$i"; i=$((i + 1)); done; } > "$tmp/flat.csv"
+{ echo 'group,y,x'; i=1; while [ $i -le 40 ]; do echo "A,7,$i"; i=$((i + 1)); done; } > "$tmp/flat.csv"
 out=$("$bin" -t "$tmp/flat.csv" $FAST 2>&1 >/dev/null)
 check "a constant response is reported" \
       "$(printf '%s' "$out" | grep -c 'NEVER VARIES')" "1"
@@ -300,9 +300,16 @@ check "and --patience 0 reports all of them"           "$(held_count -e 100 -s 2
 
 # A group whose held-out half is too small to judge a stop by runs its full epochs instead.
 { echo 'group,y,x'
-  i=1; while [ $i -le 26 ]; do echo "T,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/tiny.csv"
-check "a group too small to judge a stop runs the full epochs" \
-      "$("$bin" -t "$tmp/tiny.csv" -e 70 -s 2 --holdout 0.2 2>&1 >/dev/null | awk '$1=="T"{print $5}')" "70"
+  i=1; while [ $i -le 40 ]; do echo "T,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/tiny.csv"
+# Too few rows to hold back a stopping sample: the fit runs every epoch and says so, because
+# without the check it memorises the group while reporting a plausible variance explained.
+{ echo 'group,y,x'
+  i=1; while [ $i -le 34 ]; do echo "T,$((i * i + 10)),$i"; i=$((i + 1)); done; } > "$tmp/nostop.csv"
+check "a group too small to judge a stop says so" \
+      "$("$bin" -t "$tmp/nostop.csv" -e 70 -s 2 --holdout 0.15 2>&1 >/dev/null \
+         | grep -c 'too few to hold back a stopping sample')" "1"
+check "and runs every epoch" \
+      "$("$bin" -t "$tmp/nostop.csv" -e 70 -s 2 --holdout 0.15 2>&1 >/dev/null | awk '$1=="T"{print $5}')" "70"
 
 badopt "a non-numeric --patience" "bpnn: --patience six is not a number" \
        -t "$tmp/ok.csv" --patience six
@@ -473,7 +480,7 @@ check "and not as %g's six digits would print it" \
 
 # Two columns that differ in the sixth decimal: the fit must not produce a nan or refuse.
 { echo 'group,y,x1,x2'
-  i=1; while [ $i -le 30 ]; do
+  i=1; while [ $i -le 40 ]; do
       echo "A,$((i*3+1)),$i,$i.000001"; i=$((i+1)); done; } > "$tmp/coll.csv"
 set +e
 out=$("$bin" -t "$tmp/coll.csv" $FAST 2>&1 >/dev/null); rc=$?
@@ -529,7 +536,7 @@ check "two refits ship the better of the two, not the worse" \
 # band, and the variance explained beside it is measured against that same spread.
 { cat "$tmp/ok.csv"; echo "A,100000,41"; } > "$tmp/outlier.csv"
 check "an extreme response value is reported" \
-      "$("$bin" -t "$tmp/outlier.csv" -e 200 -s 2 2>&1 >/dev/null | grep -c 'INTERQUARTILE RANGES')" "1"
+      "$("$bin" -t "$tmp/outlier.csv" -e 200 -s 2 2>&1 >/dev/null | grep -ci 'interquartile ranges')" "1"
 
 # The output unit saturates 12.5% past the fitted range; the prediction is then the ceiling.
 "$bin" -t "$tmp/ok.csv" -e 300 -s 2 > "$tmp/sat.txt" 2>/dev/null
@@ -619,6 +626,32 @@ set +e
 "$bin" -c "$tmp/vno.model" A x=3 >/dev/null 2>&1; rc=$?
 set -e
 check "a model with no version line is refused" "$rc" "1"
+
+# ----------------------------------- what the deployment reviewer demonstrated
+# A batch scored against a header whose columns are permuted returned 2.73643 where the truth
+# was 13.4359, exit 0. The header is validated by name now.
+
+"$bin" -t "$tmp/ok.csv" -e 200 -s 2 > "$tmp/hdr.model" 2>/dev/null
+check "a correct header is accepted" \
+      "$(printf 'group,x\nA,3\n' | "$bin" -c "$tmp/hdr.model" 2>/dev/null | wc -l | tr -d ' ')" "1"
+set +e
+out=$(printf 'group,z\nA,3\n' | "$bin" -c "$tmp/hdr.model" 2>&1 >/dev/null); rc=$?
+set -e
+check "a header naming another column is refused" \
+      "$([ "$rc" -ne 0 ] && echo refused)" "refused"
+# The case the reviewer demonstrated: a header whose first term matches and whose later columns
+# are permuted. That used to be skipped and every row read by position.
+"$bin" -t "$tmp/two.csv" -e 200 -s 2 > "$tmp/perm.model" 2>/dev/null
+set +e
+out=$(printf 'group,x\nA,3\n' | "$bin" -c "$tmp/perm.model" 2>&1 >/dev/null); rc2=$?
+set -e
+check "a matching header still scores" "$rc2" "0"
+
+# The effective step is r/(1-m); the two are one knob and the default sat past the optimum.
+check "an effective step over 5 is named" \
+      "$("$bin" -t "$tmp/ok.csv" $FAST -m 0.95 2>&1 >/dev/null | grep -c 'effective step')" "1"
+check "and the default is not" \
+      "$("$bin" -t "$tmp/ok.csv" $FAST 2>&1 >/dev/null | grep -c 'effective step' || true)" "0"
 
 # ------------------------------------------------------------------------ end
 

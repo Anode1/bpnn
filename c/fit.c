@@ -160,7 +160,17 @@ int fit_group(Group *g)
     /* Half the held-out rows decide when to stop, the other half are reported. Below four rows
      * either way the split is too small to mean anything, so the fit runs its full epochs. */
     nstop = ntr + (g->n - ntr) / 2;
-    if (patience <= 0 || nstop - ntr < 4 || g->n - nstop < 4) nstop = ntr;
+    if (patience > 0 && (nstop - ntr < 4 || g->n - nstop < 4)) {
+        /* Too few rows to judge a stop by. The fit then runs every epoch of -e with no check at
+         * all, which on a small group memorises it exactly: 157 weights reached a training RMSE
+         * of 4.5e-07 on 21 rows while the report showed 51% of the variance explained. */
+        fprintf(stderr, "bpnn: group %s has %ld rows, too few to hold back a stopping sample, so\n"
+                        "  it runs every one of the %ld epochs with no early stopping and will\n"
+                        "  memorise its rows. Give it more rows, or raise --holdout.\n",
+                g->name, g->n, epochs);
+        nstop = ntr;
+    }
+    if (patience <= 0) nstop = ntr;
     g->nheld = g->n - nstop;
     for (s = 0; s < nseed; s++) {
         Rng r;

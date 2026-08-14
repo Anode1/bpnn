@@ -81,9 +81,11 @@ void report(void)
         /* Every fitted number, biases included: net_nweights counts only the weights, and the
          * advisory below is offered as the degrees-of-freedom check a network does not have. */
         nw = (long)net_nweights(g->net) + (long)g->net->dim[1] + (long)g->net->dim[2];
-        /* The stopping rows are not trained on either. */
-        ntr = g->n - g->nheld - (patience > 0 ? g->nheld : 0);
-        if (ntr < 1) ntr = g->n - g->nheld;
+        /* The stopping rows are not trained on either -- unless the split collapsed, which is
+         * exactly when this count was wrong before. nheld is the reported half, so a live
+         * stopping half is the same size. */
+        ntr = g->n - g->nheld;
+        if (patience > 0 && g->nheld * 3 <= g->n) ntr -= g->nheld;
         if (!isfinite(g->held_rmse) || !isfinite(g->train_rmse)) {
             fprintf(stderr, "%-10s %6ld %6ld %8ld %7ld   DIVERGED: the weights left the range of a\n"
                             "  number. The learning rate (-r %g), the momentum (-m %g) or the decay\n"
@@ -112,8 +114,8 @@ void report(void)
                             "  inputs. Try more hidden units (-H), a longer run (-e), or less\n"
                             "  --decay; or the relation may not be in these columns.\n",
                     100.0 * explained(g), response, g->gysd, g->held_rmse);
-        if (g->tail > 20.0)
-            fprintf(stderr, "  %s REACHES %.0f INTERQUARTILE RANGES past its own quartiles in this\n"
+        if (g->tail > 3.0)
+            fprintf(stderr, "  %s reaches %.1f interquartile ranges past its own quartiles here. The\n"
                             "  group. The target is scaled by its smallest and largest value, so\n"
                             "  every ordinary row is squeezed into a sliver of the output's range\n"
                             "  and the fit cannot separate them. The variance explained beside it\n"

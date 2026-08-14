@@ -20,8 +20,8 @@ double *xs, *ys;
 long   *rowgrp;
 long    nrow, caprow;
 
-long   hidden = 6, epochs = 3000, nseed = 5, patience = 50, minrows = 24, bufrows = 65536;
-double rate = 0.3, momentum = 0.9, holdout = 0.25, decay;
+long   hidden = 6, epochs = 3000, nseed = 5, patience = 50, minrows = 31, bufrows = 65536;
+double rate = 0.3, momentum = 0.7, holdout = 0.25, decay;
 int    activation = ACT_TANH, streaming;
 const char *cachepath;
 const char *refitpath;

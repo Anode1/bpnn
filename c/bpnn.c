@@ -28,6 +28,7 @@
 #include "tab.h"
 #include "act.h"
 #include "rng.h"
+#include <ctype.h>
 #include "train.h"
 
 #ifndef BPNN_VERSION
@@ -37,6 +38,7 @@
 #include "train.h"
 #include "act.h"
 #include "rng.h"
+#include <ctype.h>
 
 /* Below this a group cannot be split into a fit, a stopping check and a reported sample of a
  * size worth printing: at 4 rows the reported error was one row and the floor beside it was ten
@@ -99,9 +101,20 @@ static int score_stream(void)
                     lineno, nf, nf == 1 ? "" : "s", nterm, nterm == 1 ? "" : "s");
             return 1;
         }
-        /* A header line naming the terms is accepted and skipped, so the same file can be fed
-         * to the trainer and to the scorer. */
-        if (n == 0 && !strcmp(fld[1], term[0])) continue;
+        /* A header must name this model's terms, in this model's order. It used to be skipped
+         * whenever its second field matched the first term, and every row after it was then read
+         * by position: 23 columns permuted scored 2.73643 where the truth was 13.4359, exit 0. */
+        if (n == 0 && lineno == 1 && !strcmp(fld[1], term[0])) {
+            for (i = 0; i < nterm; i++)
+                if (strcmp(fld[i + 1], term[i])) {
+                    fprintf(stderr, "-:%ld:%ld: this header says '%s' where the model's term %ld "
+                                    "is '%s'.\nThe columns must be the model's terms in the "
+                                    "model's order.\n",
+                            lineno, i + 2, fld[i + 1], i + 1, term[i]);
+                    return 1;
+                }
+            continue;
+        }
         for (i = 0; i < ngroup; i++) if (!strcmp(gp[i].name, fld[0])) gi = i;
         if (gi < 0 || !gp[gi].net) {
             fprintf(stderr, "-:%ld:1: group '%s' is not in this model\n", lineno, fld[0]);
@@ -278,7 +291,10 @@ static void usage(void)
     printf("              (default %ld)\n", hidden);
     printf("  -e N        epochs (default %ld)\n", epochs);
     printf("  -s N        refits, to measure the spread (default %ld)\n", nseed);
-    printf("  -r X -m X   learning rate, momentum (default %g, %g)\n", rate, momentum);
+    printf("  -r X -m X   learning rate, momentum (default %g, %g). What matters is\n", rate, momentum);
+    printf("              r/(1-m), the step a weight takes in the limit: %g here. Past\n",
+           rate / (1.0 - momentum));
+    printf("              about 5 the fit degrades, and past 10 it collapses\n");
     printf("  -a NAME     hidden activation: sigmoid, tanh, relu (default tanh)\n");
     printf("  --holdout X fraction of rows kept out of the fit (default %g; 0 disables\n", holdout);
     printf("              it and makes the reported error meaningless as generalization)\n");
@@ -338,6 +354,8 @@ static int optstr(int argc, char **argv, int *i, const char **out)
 }
 
 /* Did any group produce a network? A model file with none is written, and was exiting 0. */
+static int minrows_set;
+
 static int fitted_any(void)
 {
     long i;
@@ -426,6 +444,7 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--min-rows")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             minrows = (long)v;
+            minrows_set = 1;
         } else if (!strcmp(argv[i], "--decay")) {
             if (optnum(argc, argv, &i, &v) != 0) return 2;
             decay = v;
@@ -486,6 +505,11 @@ int main(int argc, char **argv)
                         "smaller: try 1e-5 to 1e-4.\n", decay, rate, decay * rate);
         return 2;
     }
+    if (rate > 0 && momentum >= 0 && momentum < 1 && rate / (1.0 - momentum) > 5.0)
+        fprintf(stderr, "bpnn: -r %g with -m %g is an effective step of %.3g. Momentum multiplies\n"
+                        "the rate by 1/(1-m), so the two are one knob; past about 5 the fit gets\n"
+                        "worse and past 10 it collapses.\n",
+                rate, momentum, rate / (1.0 - momentum));
     if (rate <= 0 || momentum < 0 || momentum >= 1) {
         fprintf(stderr, "bpnn: the learning rate must be positive and the momentum in [0, 1)\n");
         return 2;
@@ -518,7 +542,22 @@ int main(int argc, char **argv)
     if (nrow == 0) { fprintf(stderr, "bpnn: %s has a header and no data rows\n", path); rc = 1; goto out; }
     if (regroup() != 0) { rc = 1; goto out; }
     for (g = 0; g < ngroup; g++) {
-        if (gp[g].n < minrows) {
+        /* The floor is a function of the model's size, not a constant: 24 rows admits exactly
+         * the groups that memorise themselves, and at 24 terms a usable fit needs ten times that.
+         * 31 is where the stopping split stops collapsing at the default holdout. */
+        {
+            long need = (long)((double)((long)nterm * hidden + hidden * 2 + 1) / (1.0 - holdout));
+            if (need < minrows) need = minrows;
+            if (minrows_set) need = minrows;
+            if (gp[g].n < need) {
+                fprintf(stderr, "bpnn: group %s has %ld rows. This shape fits %ld parameters and\n"
+                                "needs about %ld rows for the samples to mean anything, so the group\n"
+                                "is skipped. Pool it, fit it with linearr, or say --min-rows %ld.\n",
+                        gp[g].name, gp[g].n, (long)nterm * hidden + hidden * 2 + 1, need, gp[g].n);
+                continue;
+            }
+        }
+        if (0) {
             fprintf(stderr, "bpnn: group %s has %ld rows. Under %ld the fitted, stopping and\n"
                             "reported samples are all too small to mean anything, so the group is\n"
                             "skipped. Pool it with another, fit it with linearr, or say\n"
