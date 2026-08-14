@@ -8,7 +8,9 @@ of [SMBPANN](https://github.com/Anode1/SMBPANN) with the evolutionary search rem
 ## What this project is
 
 A tool, not a research programme. Forked from
-[SMBPANN](https://github.com/Anode1/SMBPANN), which is untouched and stays that way.
+[SMBPANN](https://github.com/Anode1/SMBPANN). Nothing here changes SMBPANN's engine, its
+arithmetic or its measured results: a paper has been submitted off those numbers and they
+have to stay reproducible. Its documents are ordinary documents and may be edited.
 
 The bar it is built to is the job linearr came from: a length-of-stay predictor deployed across
 hospitals in 2011, where a network was offered as an option and a regression was chosen. That is
@@ -226,7 +228,7 @@ order, because each step is the ground the next one stands on:
    every weight with exit 0. Each is now refused naming the line and the column, along with a field
    count that disagrees with the header, a duplicated term name, a group code too long to store, an
    unknown option, an option missing its value, and a case that leaves a term unnamed.
-2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, 178 checks, one per refusal plus the numeric
+2. ~~**A black-box suite.**~~ Done: `tests/cli.sh`, one check per refusal plus the numeric
    invariances (a term in millions and a response offset by 1e8 must fit identically, and the
    printed prediction must still resolve the response, which at `%g`'s six digits it did not).
 3. ~~**Streaming.**~~ Done as `--stream`, with `--footprint` and `scripts/scale.sh`. Memory holds flat

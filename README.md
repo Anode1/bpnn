@@ -488,7 +488,8 @@ could score against labels this noisy.
 
 ## Origin
 
-Forked from [SMBPANN](https://github.com/Anode1/SMBPANN), which is untouched and stays that way.
+Forked from [SMBPANN](https://github.com/Anode1/SMBPANN). Nothing here changes that engine or
+its arithmetic; a submitted paper rests on its numbers and they stay reproducible.
 
 ## Documents
 
