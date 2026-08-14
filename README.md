@@ -387,7 +387,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make            build ./bpnn and ./bpnn_worker
     make check      ut + cliut: what must pass before a commit
     make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
-    make cliut      165 black-box checks: the built binary, through a shell
+    make cliut      178 black-box checks: the built binary, through a shell
     make ut-asan    both suites under AddressSanitizer
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean

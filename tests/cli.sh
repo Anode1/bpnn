@@ -537,6 +537,10 @@ check "and an ordinary one does not" \
 # Two runs are comparable as matched pairs only if they drew from the same seed lattice, and
 # pairstat refuses them when they did not. Skipped when the tool has not been built.
 
+# A silent skip made `make check` report 160 of 165 checks while the documentation claimed 165.
+if [ ! -x "$root/pairstat" ]; then
+    echo "  SKIP: pairstat is not built (run make tools); 7 checks not run"
+fi
 if [ -x "$root/pairstat" ]; then
     "$bin" -t "$tmp/ok.csv" -e 100 -s 3 -H 4 --per-refit "$tmp/a.refits" >/dev/null 2>&1
     "$bin" -t "$tmp/ok.csv" -e 100 -s 3 -H 8 --per-refit "$tmp/b.refits" >/dev/null 2>&1
@@ -575,6 +579,41 @@ badopt "--help beside a fit" "bpnn: --help takes no other arguments. Did you mea
 # --opt=value used to be reported as an option that does not exist.
 check "--opt=value is accepted" \
       "$("$bin" -t "$tmp/ok.csv" --holdout=0.3 $FAST 2>&1 >/dev/null | grep -c '^group ')" "1"
+
+# ------------------------------------------- what the build engineer demonstrated
+# A truncated cache was accepted and answered differently with exit 0; the model version was
+# written and never read; the sanitizer targets could not fail. The first two are checkable here.
+
+# A silent skip made `make check` report 160 of 165 checks while the documentation claimed 165.
+if [ ! -x "$root/pairstat" ]; then
+    echo "  SKIP: pairstat is not built (run make tools); 7 checks not run"
+fi
+if [ -x "$root/pairstat" ]; then
+    "$bin" -t "$tmp/ok.csv" $FAST --stream --cache "$tmp/tr.bin" >/dev/null 2>&1
+    before=$(wc -c < "$tmp/tr.bin")
+    dd if=/dev/null of="$tmp/tr.bin" bs=1 seek=$((before - 12)) >/dev/null 2>&1
+    set +e
+    out=$("$bin" -t "$tmp/ok.csv" $FAST --stream --cache "$tmp/tr.bin" 2>&1 >/dev/null); rc=$?
+    set -e
+    check "a truncated cache is refused, not used" \
+          "$(printf '%s' "$out" | grep -c 'truncated or')" "1"
+    check "and the run fails rather than answering" "$rc" "1"
+fi
+
+"$bin" -t "$tmp/ok.csv" $FAST > "$tmp/ver.model" 2>/dev/null
+check "the model states its format version" "$(grep -c '^BPNN 1$' "$tmp/ver.model")" "1"
+sed 's/^BPNN 1$/BPNN 99/' "$tmp/ver.model" > "$tmp/v99.model"
+set +e
+out=$("$bin" -c "$tmp/v99.model" A x=3 2>&1 >/dev/null); rc=$?
+set -e
+check "a newer model version is refused by name" \
+      "$(printf '%s' "$out" | grep -c 'this build reads up to 1')" "1"
+check "and refusing it is a failure" "$rc" "1"
+grep -v '^BPNN' "$tmp/ver.model" > "$tmp/vno.model"
+set +e
+"$bin" -c "$tmp/vno.model" A x=3 >/dev/null 2>&1; rc=$?
+set -e
+check "a model with no version line is refused" "$rc" "1"
 
 # ------------------------------------------------------------------------ end
 

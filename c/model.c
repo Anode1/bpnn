@@ -14,6 +14,9 @@
 #define BPNN_VERSION "0.0.0-dev"
 #endif
 
+/* The model file format this build writes and the highest it will read. */
+#define MODEL_VERSION 1
+
 void write_model(void)
 {
     long i, j;
@@ -30,7 +33,7 @@ void write_model(void)
     printf("# between two configurations this pipeline can resolve at all. shipped is the error\n");
     printf("# of the model in this file and best is the best refit's; doc/DIAGNOSTICS.md says\n");
     printf("# which of them to quote.\n");
-    printf("BPNN 1\n");
+    printf("BPNN %d\n", MODEL_VERSION);
     printf("response %s\n", response);
     printf("terms %ld", nterm);
     for (j = 0; j < nterm; j++) printf(" %s", term[j]);
@@ -69,6 +72,7 @@ int read_model(const char *path)
     char line[LINELEN];
     Group *g = NULL;
     long ri = 0, lineno = 0, nfilled = 0;
+    int seen_version = 0;
     size_t l = 1, wi = 0, bi = 0;
     int rc = -1;
 
@@ -76,6 +80,22 @@ int read_model(const char *path)
     while (fgets(line, sizeof line, f)) {
         lineno++;
         if (line[0] == '#') continue;
+        if (!strncmp(line, "BPNN ", 5)) {
+            /* Written since the first version and never read, so this build would happily score
+             * a file from a later one, ignoring every line it did not recognise. A format is not
+             * versioned until the version is checked. */
+            char *end;
+            long v = strtol(line + 5, &end, 10);
+            if (end == line + 5 || v < 1) goto bad;
+            if (v > MODEL_VERSION) {
+                fprintf(stderr, "%s:%ld: this model is version %ld and this build reads up to %d."
+                                " Upgrade bpnn.\n", path, lineno, v, MODEL_VERSION);
+                fclose(f);
+                return -1;
+            }
+            seen_version = 1;
+            continue;
+        }
         if (!strncmp(line, "response ", 9)) {
             if (sscanf(line + 9, "%63s", response) != 1) goto bad;
         } else if (!strncmp(line, "terms ", 6)) {
@@ -162,7 +182,7 @@ int read_model(const char *path)
         }
     }
     if (ferror(f)) goto bad;
-    if (nfilled < 1) goto bad;
+    if (nfilled < 1 || !seen_version) goto bad;
     rc = 0;
 bad:
     if (rc != 0)

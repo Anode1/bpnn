@@ -98,7 +98,17 @@ static int shuf_pop(Shuf *s, unsigned char *out, size_t rs)
  * weakness: a rewrite inside the same second to the same length is not detected. */
 
 #define CACHE_MAGIC   "BPNNCACH"
-#define CACHE_VERSION 2
+#define CACHE_VERSION 3
+
+/* The cache is a machine-local scratch artifact, not a portable format: it holds raw longs and
+ * doubles, and a build with different constants or a different word size would misparse it. So
+ * the header carries a fingerprint of the build that wrote it and every field of it is checked.
+ * Deleting the file is always safe. */
+static long cache_fingerprint(void)
+{
+    return (long)(sizeof(long) * 1000000L + sizeof(double) * 10000L + sizeof(float) * 100L
+                  + (long)(NAMELEN / 8) + (long)(MAXTERM / 8) * 7L + (long)(MAXGROUP / 8) * 13L);
+}
 
 typedef struct { long size, mtime; } Stamp;
 
@@ -125,6 +135,7 @@ static int cache_put_header(FILE *f, const Stamp *st, long runs, long steps)
     long i, j;
     if (fwrite(CACHE_MAGIC, 8, 1, f) != 1) return -1;
     if (put_long(f, CACHE_VERSION) || put_long(f, st->size) || put_long(f, st->mtime)) return -1;
+    if (put_long(f, cache_fingerprint())) return -1;
     if (put_long(f, nterm) || put_long(f, ngroup) || put_long(f, nrow)) return -1;
     if (put_long(f, runs) || put_long(f, steps)) return -1;
     if (put_name(f, response)) return -1;
@@ -135,7 +146,7 @@ static int cache_put_header(FILE *f, const Stamp *st, long runs, long steps)
         /* The response's spread is derived from the rows and cannot be recomputed without
          * them, so it travels with the cache. Leaving it out made a reused cache report that
          * a good fit explained nothing. */
-        if (put_dbl(f, gp[i].ysd)) return -1;
+        if (put_dbl(f, gp[i].ysd) || put_dbl(f, gp[i].gysd)) return -1;
         for (j = 0; j < nterm; j++)
             if (put_dbl(f, gp[i].lo[j]) || put_dbl(f, gp[i].hi[j])) return -1;
     }
@@ -161,6 +172,13 @@ static int cache_get_header(FILE *f, const char *path, const Stamp *want, long *
         fprintf(stderr, "bpnn: the input has changed since %s was written; rebuilding it\n", path);
         return -1;
     }
+    { long fp;
+      if (get_long(f, &fp)) return -1;
+      if (fp != cache_fingerprint()) {
+          fprintf(stderr, "bpnn: %s was written by a differently configured build; "
+                          "rebuilding it\n", path);
+          return -1;
+      } }
     if (get_long(f, &nterm) || get_long(f, &ngroup) || get_long(f, &nrow)) return -1;
     if (nterm < 1 || nterm > MAXTERM || ngroup < 1 || ngroup > MAXGROUP || nrow < 1) {
         fprintf(stderr, "bpnn: %s is damaged; rebuilding it\n", path);
@@ -174,7 +192,7 @@ static int cache_get_header(FILE *f, const char *path, const Stamp *want, long *
         if (get_name(f, gp[i].name) || get_long(f, &gp[i].n) || get_long(f, &v)) return -1;
         gp[i].flat = (int)v;
         if (get_dbl(f, &gp[i].tlo) || get_dbl(f, &gp[i].thi)) return -1;
-        if (get_dbl(f, &gp[i].ysd)) return -1;
+        if (get_dbl(f, &gp[i].ysd) || get_dbl(f, &gp[i].gysd)) return -1;
         for (j = 0; j < nterm; j++)
             if (get_dbl(f, &gp[i].lo[j]) || get_dbl(f, &gp[i].hi[j])) return -1;
     }
@@ -269,7 +287,7 @@ int fit_stream(const char *path)
     long           sorted_runs = 0, sorted_steps = 0;
     long           i, s, e, k;
     long           first = 0;
-    Stamp          stamp;
+    Stamp          stamp = { 0, 0 };   /* three gcc versions warn without this */
     size_t         rs;
     int            reused = 0, rc = -1;
 
@@ -376,6 +394,21 @@ int fit_stream(const char *path)
     first = ftell(cache);
     if (first < 0) { fprintf(stderr, "bpnn: cannot seek the row cache\n"); goto done; }
     if (!reused && pack_cache(path, cache) != 0) goto done;
+    /* nrow was in the header all along and was never compared against what is actually there,
+     * so a truncated cache -- a killed run, a full disk -- simply ended its passes early and
+     * reported a different, wrong error with exit 0. */
+    if (fseek(cache, 0, SEEK_END) != 0) goto done;
+    {
+        long end = ftell(cache);
+        if (end < 0) goto done;
+        if ((end - first) != (long)((size_t)nrow * rs)) {
+            fprintf(stderr, "bpnn: %s holds %ld rows and the header says %ld; it is truncated or\n"
+                            "damaged. Delete it and it will be rebuilt.\n",
+                    cachepath ? cachepath : "the row cache",
+                    rs ? (end - first) / (long)rs : 0L, nrow);
+            goto done;
+        }
+    }
     reading_line(path);
     refit_open();          /* after the scan, so the stamp can carry the shape of the data */
     /* The header is checked against the input; the records are not checked against anything, and
