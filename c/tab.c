@@ -26,6 +26,22 @@ int    activation = ACT_TANH, streaming;
 const char *cachepath;
 const char *refitpath;
 const char *ycol;
+int    missing_drop;
+long   ndropped;
+int    idcol;
+
+/* FNV-1a over the model's own lines, so an edited weight is caught rather than scored. Not a
+ * cryptographic hash and not offered as one: it detects damage and casual editing, not an
+ * attacker who also updates the checksum. */
+unsigned long model_hash_line(unsigned long h, const char *line)
+{
+    const unsigned char *p = (const unsigned char *)line;
+    while (*p) {
+        if (*p != '\n' && *p != '\r') { h ^= (unsigned long)*p; h *= 16777619UL; h &= 0xffffffffUL; }
+        p++;
+    }
+    return h;
+}
 const char *inpath = "-";
 
 long group_of(const char *name)

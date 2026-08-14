@@ -156,6 +156,8 @@ happens to correlate with it. Nothing in the output shows when that has happened
 | `--buffer N` | 65536 | rows in the shuffle window under `--stream` |
 | `--cache FILE` | | keep `--stream`'s scaled rows in FILE, so a later run skips both passes over the CSV |
 | `--per-refit FILE` | | write each refit's held-out error, for `pairstat --paired` |
+| `--missing P` | refuse | `drop` skips rows with an empty field or `NA`, counts them, and records the count in the model |
+| `--id` | | a case carries an opaque id after the group, echoed on the prediction |
 | `--footprint T G` | | what a fit of T terms and G groups costs in memory |
 | `--selftest` | | check the arithmetic and exit |
 
@@ -396,7 +398,7 @@ something interacts. The linear cases in the table above are linearr's own examp
     make            build ./bpnn and ./bpnn_worker
     make check      ut + cliut: what must pass before a commit
     make ut         32 unit checks: rng, act, net, xor, arena, data, conv1d, conv2f
-    make cliut      184 black-box checks: the built binary, through a shell
+    make cliut      195 black-box checks: the built binary, through a shell
     make ut-asan    both suites under AddressSanitizer
     make ut-ubsan   both suites under UndefinedBehaviorSanitizer
     make pedantic   -pedantic with -Wextra -Wshadow -Wconversion; must be clean

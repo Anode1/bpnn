@@ -50,7 +50,7 @@ out=$("$bin" --help); rc=$?
 set -e
 check "--help exits 0"          "$rc" "0"
 check "--help goes to stdout"   "$(printf '%s' "$out" | grep -c '^  bpnn ')" "3"
-check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "15"
+check "--help lists the options" "$(printf '%s' "$out" | grep -c '^  -')" "17"
 
 set +e
 out=$("$bin" --selftest); rc=$?
@@ -652,6 +652,42 @@ check "an effective step over 5 is named" \
       "$("$bin" -t "$tmp/ok.csv" $FAST -m 0.95 2>&1 >/dev/null | grep -c 'effective step')" "1"
 check "and the default is not" \
       "$("$bin" -t "$tmp/ok.csv" $FAST 2>&1 >/dev/null | grep -c 'effective step' || true)" "0"
+
+# ------------------------------------------- reading real data, and trusting a model
+# A file with one empty cell in a hundred kills a fifth of the rows at 24 columns, so refusing
+# the whole file means clinical data cannot be read at all. Dropping is offered, counted, and
+# recorded in the model, because dropping biases the fit when missingness carries information.
+
+awk -F, 'BEGIN{OFS=","} NR>1 && NR%7==0 {$3=""} {print}' "$tmp/ok.csv" > "$tmp/gap.csv"
+set +e
+"$bin" -t "$tmp/gap.csv" $FAST >/dev/null 2>&1; rc=$?
+set -e
+check "a gap still refuses the file by default" "$rc" "1"
+check "--missing drop reads it" \
+      "$("$bin" -t "$tmp/gap.csv" $FAST --missing drop 2>/dev/null | grep -c '^GROUP A')" "1"
+check "and records what it dropped" \
+      "$("$bin" -t "$tmp/gap.csv" $FAST --missing drop 2>/dev/null | grep -c 'rows were dropped')" "1"
+badopt "an unknown --missing policy" "bpnn: --missing takes refuse or drop, not sometimes" \
+       -t "$tmp/ok.csv" --missing sometimes
+
+# An id echoed back, because a prediction that cannot be joined to its subject cannot be checked
+# against an outcome later.
+check "--id echoes the id on the prediction" \
+      "$(printf 'A,P77,3\n' | "$bin" --id -c "$M" 2>/dev/null)" "A,P77,$(printf 'A,3\n' | "$bin" -c "$M" 2>/dev/null | cut -d, -f2)"
+badopt "--id after -c, where the case begins" \
+       "bpnn: --id comes after -c, where everything is part of the case." \
+       -c "$M" --id
+
+# An edited weight used to be scored: one digit moved a prediction by six days.
+"$bin" -t "$tmp/ok.csv" -e 200 -s 2 > "$tmp/ck.model" 2>/dev/null
+check "the model carries a checksum" "$(grep -c '^checksum ' "$tmp/ck.model")" "1"
+sed '0,/^w /{s/^w .*/w 9.9/}' "$tmp/ck.model" > "$tmp/ed.model"
+set +e
+out=$("$bin" -c "$tmp/ed.model" A x=3 2>&1 >/dev/null); rc=$?
+set -e
+check "an edited weight is refused" \
+      "$(printf '%s' "$out" | grep -c 'checksum does not match')" "1"
+check "and refusing it fails" "$rc" "1"
 
 # ------------------------------------------------------------------------ end
 

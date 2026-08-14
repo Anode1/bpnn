@@ -48,7 +48,8 @@
 
 /* One case: prediction on stdout, caveats on stderr, so the scorer works in a pipe. WHERE names
  * the case in the warnings. */
-static void score_one(Group *g, const double *raw, const int *given, const char *where)
+static void score_one(Group *g, const double *raw, const int *given, const char *where,
+                      const char *id)
 {
     smb_real xn[MAXTERM];
     double a, p;
@@ -58,7 +59,8 @@ static void score_one(Group *g, const double *raw, const int *given, const char 
     scale_in(g, raw, xn);
     a = (double)net_forward(g->net, xn)[0];
     p = unscale_out(g, a);
-    printf("%s,%.*g\n", g->name, sigdigits(p, g->thi - g->tlo), p);
+    if (id) printf("%s,%s,%.*g\n", g->name, id, sigdigits(p, g->thi - g->tlo), p);
+    else    printf("%s,%.*g\n", g->name, sigdigits(p, g->thi - g->tlo), p);
 
     if (a < 0.02 || a > 0.98)
         fprintf(stderr, "%s: saturated: %.6g is the most extreme %s this model can return "
@@ -82,6 +84,7 @@ static void score_one(Group *g, const double *raw, const int *given, const char 
 static int score_stream(void)
 {
     char line[LINELEN], *fld[MAXTERM + 8], where[64];
+    const char *caseid = NULL;
     double raw[MAXTERM];
     int given[MAXTERM];
     long lineno = 0, n = 0, i;
@@ -96,21 +99,22 @@ static int score_stream(void)
         lineno++;
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
         nf = split_csv(line, fld, MAXTERM + 8);
-        if (nf != (int)nterm + 1) {
-            fprintf(stderr, "-:%ld: %d field%s; this model wants the group and %ld term%s\n",
-                    lineno, nf, nf == 1 ? "" : "s", nterm, nterm == 1 ? "" : "s");
+        if (nf != (int)nterm + 1 + idcol) {
+            fprintf(stderr, "-:%ld: %d field%s; this model wants the group%s and %ld term%s\n",
+                    lineno, nf, nf == 1 ? "" : "s", idcol ? ", an id" : "",
+                    nterm, nterm == 1 ? "" : "s");
             return 1;
         }
         /* A header must name this model's terms, in this model's order. It used to be skipped
          * whenever its second field matched the first term, and every row after it was then read
          * by position: 23 columns permuted scored 2.73643 where the truth was 13.4359, exit 0. */
-        if (n == 0 && lineno == 1 && !strcmp(fld[1], term[0])) {
+        if (n == 0 && lineno == 1 && !strcmp(fld[1 + idcol], term[0])) {
             for (i = 0; i < nterm; i++)
-                if (strcmp(fld[i + 1], term[i])) {
+                if (strcmp(fld[i + 1 + idcol], term[i])) {
                     fprintf(stderr, "-:%ld:%ld: this header says '%s' where the model's term %ld "
                                     "is '%s'.\nThe columns must be the model's terms in the "
                                     "model's order.\n",
-                            lineno, i + 2, fld[i + 1], i + 1, term[i]);
+                            lineno, i + 2 + idcol, fld[i + 1 + idcol], i + 1, term[i]);
                     return 1;
                 }
             continue;
@@ -121,13 +125,14 @@ static int score_stream(void)
             return 1;
         }
         snprintf(where, sizeof where, "-:%ld", lineno);
+        caseid = idcol ? fld[1] : NULL;
         for (i = 0; i < nterm; i++) {
             char what[NAMELEN + 32];
             snprintf(what, sizeof what, "the term '%s'", term[i]);
             inpath = "-";
-            if (number(fld[i + 1], what, lineno, i + 2, &raw[i]) != 0) return 1;
+            if (number(fld[i + 1 + idcol], what, lineno, i + 2 + idcol, &raw[i]) != 0) return 1;
         }
-        score_one(&gp[gi], raw, given, where);
+        score_one(&gp[gi], raw, given, where, caseid);
         n++;
     }
     if (ferror(stdin)) { fprintf(stderr, "bpnn: error reading the cases\n"); return 1; }
@@ -215,7 +220,7 @@ static int score(const char *path, int argc, char **argv, int from)
     }
     fprintf(stderr, "this model's held-out RMSE at fit time %.6g, spread over refits %.6g\n",
             g->shipped_held > 0 ? g->shipped_held : g->held_rmse, g->run_sd);
-    score_one(g, raw, given, "the case");
+    score_one(g, raw, given, "the case", NULL);
     rc = 0;
 out:
     for (i = 0; i < ngroup; i++) if (gp[i].net) net_free(gp[i].net);
@@ -287,6 +292,10 @@ static void usage(void)
     printf("  bpnn --selftest                  check the arithmetic\n\n");
     printf("input CSV is linearr's: a header, then GROUP, the response, one column per term.\n\n");
     printf("  -y NAME     the column to predict, when it is not column 2\n");
+    printf("  --missing P refuse (default) or drop rows with an empty field or NA. What\n");
+    printf("              was dropped is counted and recorded in the model\n");
+    printf("  --id        a case carries an opaque id after the group, echoed on the\n");
+    printf("              prediction so it can be joined back to its subject\n");
     printf("  -H N        hidden units, --size N also (R's nnet calls it size)\n");
     printf("              (default %ld)\n", hidden);
     printf("  -e N        epochs (default %ld)\n", epochs);
@@ -450,6 +459,16 @@ int main(int argc, char **argv)
             decay = v;
         } else if (!strcmp(argv[i], "--stream")) {
             streaming = 1;
+        } else if (!strcmp(argv[i], "--missing")) {
+            if (optstr(argc, argv, &i, &s) != 0) return 2;
+            if (!strcmp(s, "drop")) missing_drop = 1;
+            else if (!strcmp(s, "refuse")) missing_drop = 0;
+            else {
+                fprintf(stderr, "bpnn: --missing takes refuse or drop, not %s\n", s);
+                return 2;
+            }
+        } else if (!strcmp(argv[i], "--id")) {
+            idcol = 1;
         } else if (!strcmp(argv[i], "-y")) {
             if (optstr(argc, argv, &i, &ycol) != 0) return 2;
         } else if (!strcmp(argv[i], "--per-refit")) {
@@ -478,7 +497,18 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (mode == 2) return score(path, argc, argv, first);
+    if (mode == 2) {
+        /* Options after -c belong to the case, not to the program: -c takes the rest of the
+         * line. Catch the one mistake that makes, rather than reading --id as a group name. */
+        long j;
+        for (j = first; j < argc; j++)
+            if (argv[j][0] == '-' && argv[j][1] == '-') {
+                fprintf(stderr, "bpnn: %s comes after -c, where everything is part of the case.\n"
+                                "Put it before -c.\n", argv[j]);
+                return 2;
+            }
+        return score(path, argc, argv, first);
+    }
     if (mode != 1) { usage(); return 2; }
 
     if (hidden < 1 || epochs < 1 || nseed < 1) {

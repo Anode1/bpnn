@@ -65,7 +65,10 @@ extern double rate, momentum, holdout, decay;
 extern int    activation, streaming;
 extern const char *cachepath;
 extern const char *refitpath;
-extern const char *ycol;        /* -y: the column to predict, when it is not column 2 */   /* --per-refit: where the per-refit errors are written */
+extern const char *ycol;
+extern int    missing_drop;     /* --missing drop: skip a row with a gap instead of refusing */
+extern long   ndropped;         /* how many were skipped, which the model file records */
+extern int    idcol;            /* --id: a case carries an opaque id after the group */        /* -y: the column to predict, when it is not column 2 */   /* --per-refit: where the per-refit errors are written */
 extern const char *inpath;      /* what a message names; set when a file is opened */
 
 long   group_of(const char *name);
@@ -95,6 +98,7 @@ int  reader_row(Reader *rd, long *grp, double *y, double *x);
 int  number(const char *s, const char *what, long line, long col, double *out);
 int  split_csv(char *line, char **f, int maxf);
 int  read_csv(const char *path);
+unsigned long model_hash_line(unsigned long h, const char *line);
 int  regroup(void);
 
 /* fit.c. train_one and rmse are here because the streaming fit and the self-test both need

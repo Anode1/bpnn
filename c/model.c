@@ -17,6 +17,40 @@
 /* The model file format this build writes and the highest it will read. */
 #define MODEL_VERSION 1
 
+/* Over the terms, the ranges and every weight and bias: the numbers a prediction depends on.
+ * FNV-1a, which detects damage and casual editing, not an attacker who updates the checksum too. */
+static unsigned long model_checksum(void)
+{
+    char buf[64];
+    unsigned long h = 2166136261UL;
+    long i, j;
+    size_t l, k;
+    h = model_hash_line(h, response);
+    for (j = 0; j < nterm; j++) h = model_hash_line(h, term[j]);
+    for (i = 0; i < ngroup; i++) {
+        Group *g = &gp[i];
+        if (!g->net) continue;
+        h = model_hash_line(h, g->name);
+        snprintf(buf, sizeof buf, "%.17g %.17g", g->tlo, g->thi);
+        h = model_hash_line(h, buf);
+        for (j = 0; j < nterm; j++) {
+            snprintf(buf, sizeof buf, "%.17g %.17g", g->lo[j], g->hi[j]);
+            h = model_hash_line(h, buf);
+        }
+        for (l = 1; l < g->net->nlayers; l++) {
+            for (k = 0; k < net_layer_wsize(g->net, l); k++) {
+                snprintf(buf, sizeof buf, "%.9g", (double)g->net->w[l][k]);
+                h = model_hash_line(h, buf);
+            }
+            for (k = 0; k < net_layer_bsize(g->net, l); k++) {
+                snprintf(buf, sizeof buf, "%.9g", (double)g->net->b[l][k]);
+                h = model_hash_line(h, buf);
+            }
+        }
+    }
+    return h;
+}
+
 void write_model(void)
 {
     long i, j;
@@ -25,6 +59,8 @@ void write_model(void)
      * produced a number is part of the number, and the file said nothing about where it came
      * from. Deliberately no timestamp: two fits of one file stay byte-identical. */
     printf("# bpnn model: one network per group, fitted by ./bpnn -t\n");
+    if (ndropped)
+        printf("# %ld rows were dropped for missing values (--missing drop)\n", ndropped);
     printf("# bpnn %s, from %s: %ld rows, %ld group%s, %ld term%s\n",
            BPNN_VERSION, strcmp(inpath, "-") ? inpath : "standard input", nrow, ngroup,
            ngroup == 1 ? "" : "s", nterm, nterm == 1 ? "" : "s");
@@ -64,6 +100,10 @@ void write_model(void)
         }
         printf("END\n");
     }
+    /* A checksum over the fitted numbers, so an edited weight is caught rather than scored: a
+     * one-digit change to one weight moved a prediction by six days and was accepted. It covers
+     * what the model IS, not how it is spelled. */
+    printf("checksum %08lx\n", model_checksum());
 }
 
 int read_model(const char *path)
@@ -73,6 +113,7 @@ int read_model(const char *path)
     Group *g = NULL;
     long ri = 0, lineno = 0, nfilled = 0;
     int seen_version = 0;
+    unsigned long claimed = 0;
     size_t l = 1, wi = 0, bi = 0;
     int rc = -1;
 
@@ -171,6 +212,8 @@ int read_model(const char *path)
             if (l >= g->net->nlayers || bi >= net_layer_bsize(g->net, l)) goto bad;
             g->net->b[l][bi++] = (smb_real)v;
             if (bi >= net_layer_bsize(g->net, l)) { l++; wi = bi = 0; }
+        } else if (!strncmp(line, "checksum ", 9)) {
+            claimed = strtoul(line + 9, NULL, 16);
         } else if (g && g->net && !strncmp(line, "END", 3)) {
             /* Every weight and bias must have arrived. net_new mallocs the weight arrays, so a
              * short model would otherwise be scored from whatever was in that memory, giving a
@@ -183,6 +226,12 @@ int read_model(const char *path)
     }
     if (ferror(f)) goto bad;
     if (nfilled < 1 || !seen_version) goto bad;
+    if (claimed && claimed != model_checksum()) {
+        fprintf(stderr, "%s: this model's checksum does not match its contents. A weight, a range\n"
+                        "or a term name has been edited since it was fitted; refit it.\n", path);
+        fclose(f);
+        return -1;
+    }
     rc = 0;
 bad:
     if (rc != 0)

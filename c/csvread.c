@@ -165,6 +165,19 @@ int reader_row(Reader *rd, long *grp, double *y, double *x)
                     nterm + 2, response, nterm, nterm == 1 ? "" : "s");
             return -1;
         }
+        /* --missing drop: a row with a gap is skipped and counted rather than refusing the
+         * file. At 1% of cells missing over 24 columns, a fifth of the rows carry one and the
+         * default refusal means the file cannot be read at all. Dropping is not free -- if
+         * missingness carries information, and in clinical data it usually does, the fit is
+         * biased by it -- so the count travels into the model file. */
+        if (missing_drop) {
+            int j2;
+            for (j2 = 0; j2 < nf; j2++)
+                if (fld[j2][0] == '\0' || !strcmp(fld[j2], "NA") || !strcmp(fld[j2], "na")) {
+                    ndropped++;
+                    goto next_row;
+                }
+        }
         if (checkname(fld[0], "the group", rd->lineno, 1) != 0) return -1;
         *grp = group_of(fld[0]);
         if (*grp < 0) {
@@ -180,6 +193,7 @@ int reader_row(Reader *rd, long *grp, double *y, double *x)
             if (number(fld[col], what, rd->lineno, col + 1, &x[i]) != 0) return -1;
         }
         return 1;
+    next_row: ;
     }
     if (ferror(rd->f)) { fprintf(stderr, "bpnn: error reading %s\n", rd->path); return -1; }
     if (!rd->header) { fprintf(stderr, "bpnn: %s has no header line.\n", rd->path); return -1; }
